@@ -1,0 +1,373 @@
+import 'dart:convert';
+import 'dart:typed_data';
+import 'dart:ui' as ui;
+
+import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart';
+
+import '../../services/chofer_api.dart';
+import 'chofer_widgets.dart';
+
+class ChoferServicio extends StatefulWidget {
+  const ChoferServicio({
+    super.key,
+    required this.api,
+    required this.path,
+    required this.address,
+    this.initialNotes,
+  });
+
+  final ChoferApi api;
+  final String path;
+  final String address;
+  final String? initialNotes;
+
+  @override
+  State<ChoferServicio> createState() => _ChoferServicioState();
+}
+
+class _ChoferServicioState extends State<ChoferServicio> {
+  final _form = GlobalKey<FormState>();
+  final _signature = GlobalKey<_SignatureState>();
+  final _items = [_WasteInput()];
+  late final _origin = TextEditingController(text: widget.address);
+  final _destination = TextEditingController();
+  final _supplies = TextEditingController();
+  late final _notes = TextEditingController(text: widget.initialNotes);
+  late Future<Json> _catalog;
+  Json? _quote;
+  List<Json>? _quotedItems;
+  // Evidencia opcional adicional a la firma.
+  Uint8List? _photo;
+  bool _busy = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _catalog = widget.api.get('catalogos');
+  }
+
+  @override
+  void dispose() {
+    for (final item in _items) {
+      item.dispose();
+    }
+    _origin.dispose();
+    _destination.dispose();
+    _supplies.dispose();
+    _notes.dispose();
+    super.dispose();
+  }
+
+  Future<void> _preview() async {
+    if (!_form.currentState!.validate()) return;
+    final items = [for (final item in _items) item.toJson()];
+    setState(() => _busy = true);
+    try {
+      final quote = await widget.api.post('${widget.path}/cotizacion', {
+        'residuos': items,
+      });
+      if (mounted) {
+        setState(() {
+          _quotedItems = items;
+          _quote = quote;
+        });
+      }
+    } on Exception catch (error) {
+      if (mounted) showMessage(context, error);
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  Future<void> _finish() async {
+    final signer = _signature.currentState!;
+    if (!signer.hasSignature) {
+      showMessage(context, 'Recaba la firma del cliente antes de finalizar.');
+      return;
+    }
+    setState(() => _busy = true);
+    try {
+      final signature = await signer.export();
+      await widget.api.post('${widget.path}/completar', {
+        'residuos': _quotedItems,
+        'total_confirmado': _quote!['total'],
+        'origen': _origin.text.trim(),
+        'destino': _destination.text.trim(),
+        'insumos': _supplies.text.trim(),
+        'observaciones': _notes.text.trim(),
+        'firma': signature,
+        if (_photo != null) 'foto': base64Encode(_photo!),
+      });
+      if (mounted) Navigator.pop(context, true);
+    } on Exception catch (error) {
+      if (mounted) showMessage(context, error);
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) => Scaffold(
+    appBar: AppBar(title: const Text('Capturar recolección')),
+    body: AsyncContent(
+      future: _catalog,
+      retry: () {
+        final next = widget.api.get('catalogos');
+        setState(() {
+          _catalog = next;
+        });
+      },
+      builder: (catalog) => _quote == null ? _capture(catalog) : _confirm(),
+    ),
+  );
+
+  Widget _capture(Json catalog) => Form(
+    key: _form,
+    child: AbsorbPointer(
+      absorbing: _busy,
+      child: ListView(
+        padding: const EdgeInsets.all(16),
+        children: [
+          for (var index = 0; index < _items.length; index++)
+            _wasteCard(index, rows(catalog, 'residuos')),
+          TextButton.icon(
+            onPressed: _items.length >= rows(catalog, 'residuos').length
+                ? null
+                : () => setState(() => _items.add(_WasteInput())),
+            icon: const Icon(Icons.add),
+            label: const Text('Agregar tipo de residuo'),
+          ),
+          _requiredField(_origin, 'Origen'),
+          _requiredField(_destination, 'Destino'),
+          TextFormField(
+            controller: _supplies,
+            maxLength: 255,
+            decoration: const InputDecoration(labelText: 'Insumos utilizados'),
+          ),
+          TextFormField(
+            controller: _notes,
+            maxLength: 255,
+            decoration: const InputDecoration(
+              labelText: 'Observaciones del servicio',
+            ),
+          ),
+          FilledButton(
+            onPressed: _busy ? null : _preview,
+            child: Text(_busy ? 'Calculando…' : 'Calcular cargos'),
+          ),
+        ],
+      ),
+    ),
+  );
+
+  Widget _wasteCard(int index, List<Json> catalog) {
+    final item = _items[index];
+    return Card(
+      key: ObjectKey(item),
+      child: Padding(
+        padding: const EdgeInsets.all(12),
+        child: Column(
+          children: [
+            DropdownButtonFormField<int>(
+              initialValue: item.waste,
+              isExpanded: true,
+              decoration: const InputDecoration(labelText: 'Tipo de residuo'),
+              items: [
+                for (final entry in catalog)
+                  DropdownMenuItem(
+                    value: entry['id'] as int,
+                    child: Text('${entry['nombre']}'),
+                  ),
+              ],
+              onChanged: (value) => item.waste = value,
+              validator: (value) {
+                if (value == null) return 'Selecciona un residuo';
+                if (_items.where((other) => other.waste == value).length > 1) {
+                  return 'Agrupa los residuos del mismo tipo';
+                }
+                return null;
+              },
+            ),
+            DecimalField(controller: item.quantity, label: 'Cantidad'),
+            DecimalField(controller: item.weight, label: 'Peso en kg'),
+            TextFormField(
+              controller: item.notes,
+              maxLength: 255,
+              decoration: const InputDecoration(
+                labelText: 'Observaciones del residuo',
+              ),
+            ),
+            if (_items.length > 1)
+              TextButton(
+                onPressed: () {
+                  setState(() => _items.removeAt(index));
+                  WidgetsBinding.instance.addPostFrameCallback(
+                    (_) => item.dispose(),
+                  );
+                },
+                child: const Text('Quitar tipo de residuo'),
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _requiredField(TextEditingController controller, String label) =>
+      TextFormField(
+        controller: controller,
+        maxLength: 255,
+        decoration: InputDecoration(labelText: label),
+        validator: (value) =>
+            (value ?? '').trim().isEmpty ? 'Campo obligatorio' : null,
+      );
+
+  Widget _confirm() {
+    final quote = _quote!;
+    return AbsorbPointer(
+      absorbing: _busy,
+      child: ListView(
+        padding: const EdgeInsets.all(16),
+        children: [
+          Text(
+            'Importes para el cliente',
+            style: Theme.of(context).textTheme.titleLarge,
+          ),
+          for (final line in rows(quote, 'conceptos'))
+            Text('${line['concepto']} · ${mxn(line['subtotal'])}'),
+          Text('Subtotal ${mxn(quote['subtotal'])}'),
+          Text('IVA ${mxn(quote['iva'])}'),
+          Text(
+            'Total ${mxn(quote['total'])}',
+            style: Theme.of(context).textTheme.titleMedium,
+          ),
+          const SizedBox(height: 12),
+          const Text(
+            'La firma reconoce el servicio y los importes informados. El pago se registra por separado.',
+          ),
+          const SizedBox(height: 8),
+          _Signature(key: _signature),
+          PhotoInput(
+            photo: _photo,
+            enabled: !_busy,
+            onChanged: (photo) => setState(() => _photo = photo),
+          ),
+          FilledButton(
+            onPressed: _busy ? null : _finish,
+            child: Text(_busy ? 'Guardando…' : 'Finalizar y emitir manifiesto'),
+          ),
+          TextButton(
+            onPressed: _busy ? null : () => setState(() => _quote = null),
+            child: const Text('Volver a la captura'),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _WasteInput {
+  int? waste;
+  final quantity = TextEditingController();
+  final weight = TextEditingController();
+  final notes = TextEditingController();
+
+  Json toJson() => {
+    'fk_desecho': waste,
+    'cantidad': normalizedDecimal(quantity.text),
+    'peso': normalizedDecimal(weight.text),
+    'observaciones': notes.text.trim(),
+  };
+
+  void dispose() {
+    quantity.dispose();
+    weight.dispose();
+    notes.dispose();
+  }
+}
+
+class _Signature extends StatefulWidget {
+  const _Signature({super.key});
+
+  @override
+  State<_Signature> createState() => _SignatureState();
+}
+
+class _SignatureState extends State<_Signature> {
+  final _capture = GlobalKey();
+  final _strokes = <List<Offset>>[];
+
+  bool get hasSignature => _strokes.any((stroke) => stroke.length > 1);
+
+  Future<String> export() async {
+    final boundary =
+        _capture.currentContext!.findRenderObject() as RenderRepaintBoundary;
+    final image = await boundary.toImage();
+    try {
+      final data = await image.toByteData(format: ui.ImageByteFormat.png);
+      return base64Encode(
+        data!.buffer.asUint8List(data.offsetInBytes, data.lengthInBytes),
+      );
+    } finally {
+      image.dispose();
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) => Column(
+    crossAxisAlignment: CrossAxisAlignment.start,
+    children: [
+      const Text('Firma del cliente'),
+      Container(
+        decoration: BoxDecoration(
+          border: Border.all(color: Theme.of(context).colorScheme.outline),
+        ),
+        child: GestureDetector(
+          behavior: HitTestBehavior.opaque,
+          onPanStart: (event) =>
+              setState(() => _strokes.add([event.localPosition])),
+          onPanUpdate: (event) =>
+              setState(() => _strokes.last.add(event.localPosition)),
+          child: RepaintBoundary(
+            key: _capture,
+            child: ColoredBox(
+              color: Colors.white,
+              child: CustomPaint(
+                painter: _SignaturePainter(_strokes),
+                child: const SizedBox(width: double.infinity, height: 180),
+              ),
+            ),
+          ),
+        ),
+      ),
+      TextButton(
+        onPressed: () => setState(_strokes.clear),
+        child: const Text('Borrar firma'),
+      ),
+    ],
+  );
+}
+
+class _SignaturePainter extends CustomPainter {
+  _SignaturePainter(this.strokes);
+
+  final List<List<Offset>> strokes;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    canvas.clipRect(Offset.zero & size);
+    final pen = Paint()
+      ..color = Colors.black
+      ..strokeWidth = 2.5
+      ..strokeCap = StrokeCap.round;
+    for (final stroke in strokes) {
+      for (var i = 1; i < stroke.length; i++) {
+        canvas.drawLine(stroke[i - 1], stroke[i], pen);
+      }
+    }
+  }
+
+  @override
+  bool shouldRepaint(_SignaturePainter oldDelegate) => true;
+}
