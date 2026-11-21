@@ -158,7 +158,7 @@ async function seedAdministrator() {
   await models.User.create({
     rolId: role._id,
     usuario: username,
-    usuarioNormalizado,
+    usuarioNormalizado: usernameNormalizado,
     nombre: (
       process.env.ADMIN_NAME ||
       'Administrador EcoReco'

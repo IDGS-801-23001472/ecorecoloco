@@ -20,6 +20,10 @@ const accounts = {
   cuentas_chofer: 3,
 };
 
+const activeFilter = {
+  $or: [{ activo: true }, { estado: 1 }],
+};
+
 const field = (
   key,
   label,
@@ -404,15 +408,42 @@ function objectId(value, label = 'Identificador') {
   return new mongoose.Types.ObjectId(value);
 }
 
+function embeddedNeighborhoodId(sectorId, col, index) {
+  const seed = `${String(sectorId)}:${col.pk_colonia ?? index}:${col.nombre ?? ''}`;
+  const hex = createHash('md5').update(seed).digest('hex').slice(0, 24);
+  return new mongoose.Types.ObjectId(hex);
+}
+
+async function getEmbeddedNeighborhoods() {
+  const sectors = await models.Sector.find(activeFilter).lean();
+  const result = [];
+
+  for (const sector of sectors) {
+    const listCols = Array.isArray(sector.colonias) ? sector.colonias : [];
+    listCols.forEach((col, idx) => {
+      if (!col || !col.nombre) return;
+      const oid = embeddedNeighborhoodId(sector._id, col, idx);
+      result.push({
+        _id: oid,
+        id: oid.toString(),
+        nombre: col.codigo_postal
+          ? `${col.nombre} (CP ${col.codigo_postal})`
+          : col.nombre,
+      });
+    });
+  }
+
+  return result;
+}
+
+
 // ==========================================
 // OPCIONES PARA SELECTORES
 // ==========================================
 
 async function options(_conn, source) {
   if (source === 'roles') {
-    const rows = await models.Role.find({
-      activo: true,
-    })
+    const rows = await models.Role.find(activeFilter)
       .sort({ codigo: 1 })
       .lean();
 
@@ -425,14 +456,14 @@ async function options(_conn, source) {
   if (Object.hasOwn(accounts, source)) {
     const role = await models.Role.findOne({
       codigo: accounts[source],
-      activo: true,
+      ...activeFilter,
     }).select('_id');
 
     if (!role) return [];
 
     const rows = await models.User.find({
       rolId: role._id,
-      activo: true,
+      ...activeFilter,
     })
       .select('usuario nombre')
       .sort({ nombre: 1 })
@@ -450,12 +481,16 @@ async function options(_conn, source) {
 
   const sortField = config.title || 'nombre';
 
-  const rows = await config.model.find({
-    activo: true,
-  })
+  const rows = await config.model.find(activeFilter)
     .sort({ [sortField]: 1 })
     .limit(500)
     .lean();
+
+  if (source === 'colonias' && rows.length === 0) {
+    const embedded = await getEmbeddedNeighborhoods();
+    embedded.sort((a, b) => a.nombre.localeCompare(b.nombre, 'es'));
+    return embedded.slice(0, 500).map(({ id, nombre }) => ({ id, nombre }));
+  }
 
   return rows.map(row => ({
     id: row._id.toString(),
@@ -589,12 +624,17 @@ async function resolveReference(item, value) {
 
   const target = catalogs[item.source];
 
-  const exists = target
+  let exists = target
     ? await target.model.exists({
         _id: value,
-        activo: true,
+        ...activeFilter,
       })
     : null;
+
+  if (!exists && item.source === 'colonias') {
+    const embedded = await getEmbeddedNeighborhoods();
+    exists = embedded.some(col => col._id.equals(value));
+  }
 
   if (!exists) {
     throw new RequestError(
