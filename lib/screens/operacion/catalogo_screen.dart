@@ -210,6 +210,59 @@ class _CatalogoFormState extends State<_CatalogoForm> {
     }
   }
 
+  Widget _select(Json field, InputDecoration decoration, Object? value) {
+    final key = field['key'] as String;
+    final optional = field['required'] != true;
+    const unassigned = '';
+    final options = field['type'] == 'ref'
+        ? rows(widget.data['selectors'] as Json, field['source'] as String)
+        : [
+            for (final option in widget.data['frequencies'] as List)
+              {'id': option, 'nombre': option},
+          ];
+    final available = options
+        .where((entry) => entry['asignada'] != true || entry['id'] == value)
+        .toList();
+    final currentIsAvailable = available.any((entry) => entry['id'] == value);
+
+    return DropdownButtonFormField<Object>(
+      initialValue: currentIsAvailable
+          ? value
+          : value == null && optional
+          ? unassigned
+          : null,
+      isExpanded: true,
+      decoration: decoration.copyWith(
+        hintText: value != null && !currentIsAvailable
+            ? 'Selecciona un valor vigente'
+            : null,
+        helperText: key == 'fk_usuario' && optional
+            ? 'Opcional. Solo se muestran cuentas disponibles.'
+            : null,
+      ),
+      items: [
+        if (optional)
+          const DropdownMenuItem(value: unassigned, child: Text('Sin asignar')),
+        for (final entry in available)
+          DropdownMenuItem(
+            value: entry['id'] as Object,
+            child: Text('${entry['nombre']}', overflow: TextOverflow.ellipsis),
+          ),
+      ],
+      onChanged: (_) {},
+      validator: (selection) {
+        if (selection == null && value != null && !currentIsAvailable) {
+          return optional
+              ? 'Selecciona un valor vigente o Sin asignar'
+              : 'Selecciona un valor vigente';
+        }
+        return _validate(field, selection);
+      },
+      onSaved: (selection) =>
+          _values[key] = selection == unassigned ? null : selection,
+    );
+  }
+
   Widget _input(Json field) {
     final key = field['key'] as String;
     final type = field['type'] as String;
@@ -217,35 +270,7 @@ class _CatalogoFormState extends State<_CatalogoForm> {
     final label = field['label'] as String;
     final decoration = InputDecoration(labelText: label);
     if (type == 'ref' || type == 'frequency') {
-      final options = type == 'ref'
-          ? rows(widget.data['selectors'] as Json, field['source'] as String)
-          : [
-              for (final option in widget.data['frequencies'] as List)
-                {'id': option, 'nombre': option},
-            ];
-      final selected = options.any((entry) => entry['id'] == value)
-          ? value
-          : null;
-      return DropdownButtonFormField<Object>(
-        initialValue: selected,
-        isExpanded: true,
-        decoration: decoration,
-        items: [
-          if (field['required'] != true)
-            const DropdownMenuItem(value: null, child: Text('Sin asignar')),
-          for (final entry in options)
-            DropdownMenuItem(
-              value: entry['id'] as Object,
-              child: Text(
-                '${entry['nombre']}',
-                overflow: TextOverflow.ellipsis,
-              ),
-            ),
-        ],
-        onChanged: (_) {},
-        validator: (value) => _validate(field, value),
-        onSaved: (value) => _values[key] = value,
-      );
+      return _select(field, decoration, value);
     }
     final initial = value?.toString() ?? '';
     return TextFormField(

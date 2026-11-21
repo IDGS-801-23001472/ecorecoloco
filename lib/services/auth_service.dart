@@ -29,12 +29,9 @@ class AuthService {
           .post(
             Uri.parse('$baseUrl/auth/login'),
             headers: {'Content-Type': 'application/json'},
-            body: jsonEncode({
-              'usuario': usuario,
-              'pass': password,
-            }),
+            body: jsonEncode({'usuario': usuario, 'pass': password}),
           )
-          .timeout(const Duration(seconds: 15));
+          .timeout(const Duration(seconds: 60));
 
       if (response.statusCode == 200) {
         final data = jsonDecode(utf8.decode(response.bodyBytes));

@@ -4,6 +4,7 @@ const { promisify } = require('node:util');
 const mongoose = require('mongoose');
 
 const models = require('../models');
+const { embeddedNeighborhoodId } = require('./embedded-neighborhood');
 const {
   RequestError,
   date,
@@ -21,7 +22,7 @@ const accounts = {
 };
 
 const activeFilter = {
-  $or: [{ activo: true }, { estado: 1 }],
+  $or: [{ activo: true }, { activo: { $exists: false }, estado: 1 }],
 };
 
 const field = (
@@ -110,7 +111,7 @@ const catalogs = {
         false,
         'actividadComercialId'
       ),
-      field('razon_social', 'Razón social', 'text', false, 255),
+      field('razon_social', 'Razón social', 'text', false, 255, 'razonSocial'),
       field('rfc', 'RFC', 'text', false, 13),
       field('direccion', 'Dirección', 'text', true, 255),
       ref(
@@ -408,38 +409,50 @@ function objectId(value, label = 'Identificador') {
   return new mongoose.Types.ObjectId(value);
 }
 
-function embeddedNeighborhoodId(sectorId, col, index) {
-  const seed = `${String(sectorId)}:${col.pk_colonia ?? index}:${col.nombre ?? ''}`;
-  const hex = createHash('md5').update(seed).digest('hex').slice(0, 24);
-  return new mongoose.Types.ObjectId(hex);
-}
-
-async function getEmbeddedNeighborhoods() {
-  const sectors = await models.Sector.find(activeFilter).lean();
-  const result = [];
-
-  for (const sector of sectors) {
-    const listCols = Array.isArray(sector.colonias) ? sector.colonias : [];
-    listCols.forEach((col, idx) => {
-      if (!col || !col.nombre) return;
-      const oid = embeddedNeighborhoodId(sector._id, col, idx);
-      result.push({
-        _id: oid,
-        id: oid.toString(),
-        nombre: col.codigo_postal
-          ? `${col.nombre} (CP ${col.codigo_postal})`
-          : col.nombre,
-      });
-    });
-  }
-
-  return result;
-}
-
 
 // ==========================================
 // OPCIONES PARA SELECTORES
 // ==========================================
+
+function neighborhoodLabel(row) {
+  const postalCode = row.codigoPostal ?? row.codigo_postal;
+  return postalCode ? `${row.nombre} (CP ${postalCode})` : row.nombre;
+}
+
+async function neighborhoodOptions() {
+  const [sectors, standalone] = await Promise.all([
+    models.Sector.find(activeFilter).select('colonias').lean(),
+    models.Neighborhood.find().lean(),
+  ]);
+  const options = new Map();
+
+  for (const sector of sectors) {
+    const colonies = Array.isArray(sector.colonias) ? sector.colonias : [];
+    for (const [index, colony] of colonies.entries()) {
+      if (!colony?.nombre || (colony.activo ?? (colony.estado !== 0)) === false) {
+        continue;
+      }
+
+      const id = embeddedNeighborhoodId(sector._id, colony, index).toString();
+      options.set(id, { id, nombre: neighborhoodLabel(colony) });
+    }
+  }
+
+  for (const row of standalone) {
+    const id = row._id.toString();
+    if (row.activo ?? (row.estado === 1)) {
+      options.set(id, { id, nombre: neighborhoodLabel(row) });
+    } else {
+      options.delete(id);
+    }
+  }
+
+  return [...options.values()].sort((a, b) => a.nombre.localeCompare(b.nombre, 'es'));
+}
+
+async function catalogRole(code) {
+  return models.Role.findOne({ codigo: code, ...activeFilter }).select('_id');
+}
 
 async function options(_conn, source) {
   if (source === 'roles') {
@@ -454,43 +467,33 @@ async function options(_conn, source) {
   }
 
   if (Object.hasOwn(accounts, source)) {
-    const role = await models.Role.findOne({
-      codigo: accounts[source],
-      ...activeFilter,
-    }).select('_id');
-
+    const role = await catalogRole(accounts[source]);
     if (!role) return [];
 
-    const rows = await models.User.find({
-      rolId: role._id,
-      ...activeFilter,
-    })
-      .select('usuario nombre')
-      .sort({ nombre: 1 })
-      .lean();
+    const [rows, assigned] = await Promise.all([
+      models.User.find({ rolId: role._id, ...activeFilter })
+        .select('usuario nombre').sort({ nombre: 1 }).lean(),
+      source === 'cuentas_cliente' ? models.Client.distinct('cuentaId') : [],
+    ]);
+    const assignedIds = new Set(assigned.filter(Boolean).map(String));
 
     return rows.map(row => ({
       id: row._id.toString(),
       nombre: `${row.nombre} · ${row.usuario}`,
+      ...(assignedIds.has(row._id.toString()) ? { asignada: true } : {}),
     }));
   }
 
-  const config = catalogs[source];
+  if (source === 'colonias') return neighborhoodOptions();
 
+  const config = catalogs[source];
   if (!config) return [];
 
   const sortField = config.title || 'nombre';
-
   const rows = await config.model.find(activeFilter)
     .sort({ [sortField]: 1 })
     .limit(500)
     .lean();
-
-  if (source === 'colonias' && rows.length === 0) {
-    const embedded = await getEmbeddedNeighborhoods();
-    embedded.sort((a, b) => a.nombre.localeCompare(b.nombre, 'es'));
-    return embedded.slice(0, 500).map(({ id, nombre }) => ({ id, nombre }));
-  }
 
   return rows.map(row => ({
     id: row._id.toString(),
@@ -582,68 +585,36 @@ function normalizeInput(item, value) {
 async function resolveReference(item, value) {
   if (value == null) return null;
 
+  let resolved = null;
   if (item.source === 'roles') {
-    const role = await models.Role.findOne({
-      codigo: value,
-      activo: true,
-    }).select('_id');
-
-    if (!role) {
-      throw new RequestError(
-        `${item.label} no está disponible.`,
-        409
-      );
-    }
-
-    return role._id;
-  }
-
-  if (Object.hasOwn(accounts, item.source)) {
-    const role = await models.Role.findOne({
-      codigo: accounts[item.source],
-      activo: true,
-    }).select('_id');
-
-    const user = role
-      ? await models.User.findOne({
-          _id: value,
-          rolId: role._id,
-          activo: true,
-        }).select('_id')
-      : null;
-
-    if (!user) {
-      throw new RequestError(
-        `${item.label} no está disponible.`,
-        409
-      );
-    }
-
-    return user._id;
-  }
-
-  const target = catalogs[item.source];
-
-  let exists = target
-    ? await target.model.exists({
+    resolved = (await catalogRole(value))?._id;
+  } else if (Object.hasOwn(accounts, item.source)) {
+    const role = await catalogRole(accounts[item.source]);
+    if (role) {
+      resolved = (await models.User.exists({
         _id: value,
+        rolId: role._id,
         ...activeFilter,
-      })
-    : null;
-
-  if (!exists && item.source === 'colonias') {
-    const embedded = await getEmbeddedNeighborhoods();
-    exists = embedded.some(col => col._id.equals(value));
+      }))?._id;
+    }
+  } else if (item.source === 'colonias') {
+    const neighborhoods = await neighborhoodOptions();
+    if (neighborhoods.some(option => option.id === value.toString())) {
+      resolved = value;
+    }
+  } else {
+    const target = catalogs[item.source];
+    resolved = (await target?.model.exists({
+      _id: value,
+      ...activeFilter,
+    }))?._id;
   }
 
-  if (!exists) {
-    throw new RequestError(
-      `${item.label} no está disponible.`,
-      409
-    );
+  if (!resolved) {
+    throw new RequestError(`${item.label} no está disponible.`, 409);
   }
 
-  return value;
+  return resolved;
 }
 
 // ==========================================
@@ -780,14 +751,12 @@ async function list(resource, role, page = 1) {
   const config = definition(resource, role);
   const offset = (page - 1) * 50;
 
-  const query = config.model.find()
+    const query = config.model.find()
     .sort({ activo: -1, _id: -1 })
     .skip(offset)
     .limit(51);
 
-  for (const item of config.fields.filter(
-    field => field.type === 'ref'
-  )) {
+  for (const item of config.fields.filter(field => field.source === 'roles')) {
     query.populate({
       path: item.db,
       select: 'codigo nombre folio titulo usuario',
@@ -799,7 +768,7 @@ async function list(resource, role, page = 1) {
   const items = documents.slice(0, 50).map(document => {
     const result = {
       id: document._id.toString(),
-      estado: document.activo === false ? 0 : 1,
+      estado: (document.activo ?? document.estado !== 0) ? 1 : 0,
     };
 
     for (const item of config.fields) {
@@ -812,15 +781,11 @@ async function list(resource, role, page = 1) {
           ? null
           : item.source === 'roles'
             ? value.codigo
-            : value._id?.toString() || null;
+            : value.toString();
       } else if (item.type === 'decimal') {
-        result[item.key] = value == null
-          ? null
-          : value.toString();
+        result[item.key] = value == null ? null : value.toString();
       } else if (item.type === 'date') {
-        result[item.key] = value == null
-          ? null
-          : String(value).slice(0, 10);
+        result[item.key] = value == null ? null : String(value).slice(0, 10);
       } else {
         result[item.key] = value == null ? null : value;
       }
