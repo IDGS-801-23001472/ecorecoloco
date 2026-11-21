@@ -558,7 +558,7 @@ async function assign(userId, body) {
 
     const tail = await models.Collection.find({
       fechaClave: day,
-      rutaId,
+      rutaId: routeId,
       turnoId: shiftId,
       choferId: driverId,
       activo: true,
