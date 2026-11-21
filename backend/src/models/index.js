@@ -214,6 +214,11 @@ const contractSchema = new Schema({
     enum: ['Semanal', 'Quincenal', 'Mensual'],
     required: true,
   },
+  turnoId: {
+    type: ObjectId,
+    ref: 'Shift',
+    default: null,
+  },
   horaServicio: {
     type: String,
     default: null,

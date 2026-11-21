@@ -212,8 +212,12 @@ class _CatalogoFormState extends State<_CatalogoForm> {
 
   Widget _select(Json field, InputDecoration decoration, Object? value) {
     final key = field['key'] as String;
-    final optional = field['required'] != true;
+    final isContractShift = field['source'] == 'turnos_contrato';
+    final optional =
+        field['required'] != true &&
+        (!isContractShift || (widget.item != null && value == null));
     const unassigned = '';
+
     final options = field['type'] == 'ref'
         ? rows(widget.data['selectors'] as Json, field['source'] as String)
         : [
@@ -251,6 +255,9 @@ class _CatalogoFormState extends State<_CatalogoForm> {
       ],
       onChanged: (_) {},
       validator: (selection) {
+        if (isContractShift && !optional && selection == null) {
+          return 'Selecciona un turno de recolección';
+        }
         if (selection == null && value != null && !currentIsAvailable) {
           return optional
               ? 'Selecciona un valor vigente o Sin asignar'
@@ -263,15 +270,81 @@ class _CatalogoFormState extends State<_CatalogoForm> {
     );
   }
 
+  Widget _contractDate(Json field, InputDecoration decoration) {
+    final key = field['key'] as String;
+    final isStart = key == 'fecha_inicio';
+    final rawToday = widget.data['fecha_actual'] as String?;
+    final today = DateUtils.dateOnly(
+      DateTime.tryParse(rawToday ?? '') ?? DateTime.now(),
+    );
+    final original = DateTime.tryParse('${widget.item?[key] ?? ''}');
+    final selected = DateTime.tryParse('${_values[key] ?? ''}');
+
+    DateTime minimum() => isStart
+        ? today
+        : DateTime.tryParse('${_values['fecha_inicio'] ?? ''}') ?? today;
+
+    return FormField<DateTime>(
+      initialValue: selected,
+      validator: (value) {
+        if (value == null) return 'Campo obligatorio';
+        if (value.isBefore(minimum()) && (!isStart || value != original)) {
+          return isStart
+              ? 'El inicio no puede ser anterior a hoy'
+              : 'El fin no puede ser anterior al inicio';
+        }
+        return null;
+      },
+      builder: (state) => InkWell(
+        onTap: () async {
+          final first = minimum();
+          final value = state.value ?? first;
+          final date = await showDatePicker(
+            context: context,
+            initialDate: value.isBefore(first) ? first : value,
+            firstDate: first,
+            lastDate: DateTime(9999, 12, 31),
+            currentDate: today,
+            initialEntryMode: DatePickerEntryMode.calendarOnly,
+            helpText: field['label'] as String,
+            cancelText: 'Cancelar',
+            confirmText: 'Aceptar',
+          );
+          if (date == null || !mounted) return;
+          state.didChange(date);
+          _values[key] = date.toIso8601String().substring(0, 10);
+        },
+        child: InputDecorator(
+          decoration: decoration.copyWith(
+            suffixIcon: const Icon(Icons.calendar_today),
+            errorText: state.errorText,
+          ),
+          isEmpty: state.value == null,
+          child: Text(
+            state.value == null
+                ? ''
+                : MaterialLocalizations.of(context)
+                      .formatCompactDate(state.value!),
+          ),
+        ),
+      ),
+    );
+  }
+
   Widget _input(Json field) {
     final key = field['key'] as String;
     final type = field['type'] as String;
     final value = _values[key];
     final label = field['label'] as String;
     final decoration = InputDecoration(labelText: label);
+
     if (type == 'ref' || type == 'frequency') {
       return _select(field, decoration, value);
     }
+    if (type == 'date' && (key == 'fecha_inicio' || key == 'fecha_fin')) {
+      return _contractDate(field, decoration);
+    }
+
     final initial = value?.toString() ?? '';
     return TextFormField(
       initialValue: type == 'date' && initial.length > 10

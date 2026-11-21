@@ -4,6 +4,8 @@ const { promisify } = require('node:util');
 const mongoose = require('mongoose');
 
 const models = require('../models');
+const { today } = require('./operacion-agenda');
+const { activeShifts, shiftHours, listShifts } = require('./turnos');
 const { embeddedNeighborhoodId } = require('./embedded-neighborhood');
 const {
   RequestError,
@@ -165,13 +167,12 @@ const catalogs = {
         30,
         'frecuencia'
       ),
-      field(
-        'hora_servicio',
-        'Hora del servicio',
-        'time',
+      ref(
+        'fk_turno',
+        'Turno de recolección',
+        'turnos_contrato',
         false,
-        8,
-        'horaServicio'
+        'turnoId'
       ),
       field(
         'monto',
@@ -486,6 +487,13 @@ async function options(_conn, source) {
 
   if (source === 'colonias') return neighborhoodOptions();
 
+  if (source === 'turnos_contrato') {
+    return (await listShifts()).map(shift => ({
+      id: shift._id.toString(),
+      nombre: `${shift.nombre} (${shift.horaInicio}–${shift.horaFin})`,
+    }));
+  }
+
   const config = catalogs[source];
   if (!config) return [];
 
@@ -584,6 +592,7 @@ function normalizeInput(item, value) {
 
 async function resolveReference(item, value) {
   if (value == null) return null;
+  if (item.source === 'turnos_contrato') return value;
 
   let resolved = null;
   if (item.source === 'roles') {
@@ -826,6 +835,7 @@ async function list(resource, role, page = 1) {
     title: config.title || 'nombre',
     label: config.label,
     frequencies,
+    ...(resource === 'contratos' ? { fecha_actual: today() } : {}),
   };
 }
 
@@ -876,39 +886,58 @@ async function save(user, resource, resourceId, body) {
   }
 
   // Validaciones específicas de contratos.
-  if (resource === 'contratos') {
+    if (resource === 'contratos') {
+    const current = existingId
+      ? await models.Contract.findById(existingId)
+        .select('clienteId fechaInicio turnoId horaServicio').lean()
+      : null;
+
+    if (existingId && !current) {
+      throw new RequestError('Registro no encontrado.', 404);
+    }
+
+    if (values.fechaInicio < today() && values.fechaInicio !== current?.fechaInicio) {
+      throw new RequestError('El inicio de vigencia no puede ser anterior a hoy.');
+    }
+
+    if (!values.turnoId && (!current || current.turnoId)) {
+      throw new RequestError('Selecciona un turno de recolección.');
+    }
+
+    if (values.turnoId && String(values.turnoId) !== String(current?.turnoId)) {
+      const shift = await models.Shift.findOne({
+        _id: values.turnoId,
+        ...activeShifts,
+      }).lean();
+      const hours = shiftHours(shift);
+
+      if (!hours) {
+        throw new RequestError('El turno ya no está disponible.', 409);
+      }
+
+      values.horaServicio = hours.horaInicio;
+    } else {
+      values.horaServicio = current?.horaServicio ?? null;
+    }
+
     if (
       values.fechaFin < values.fechaInicio ||
       Number(values.ivaPorcentaje.toString()) > 100 ||
-      (
-        values.kilosMensuales != null &&
-        values.tarifaExcedente == null
-      )
+      (values.kilosMensuales != null && values.tarifaExcedente == null)
     ) {
       throw new RequestError(
         'Revisa la vigencia, el porcentaje de IVA y la tarifa de excedente.'
       );
     }
 
-    if (existingId) {
-      const current = await models.Contract.findById(existingId)
-        .select('clienteId');
-
-      if (!current) {
-        throw new RequestError('Registro no encontrado.', 404);
-      }
-
-      if (
-        !current.clienteId.equals(values.clienteId) &&
-        await models.Collection.exists({
-          contratoId: existingId,
-        })
-      ) {
-        throw new RequestError(
-          'El contrato ya tiene visitas. Conserva el cliente original.',
-          409
-        );
-      }
+    if (
+      current && !current.clienteId.equals(values.clienteId) &&
+      await models.Collection.exists({ contratoId: existingId })
+    ) {
+      throw new RequestError(
+        'El contrato ya tiene visitas. Conserva el cliente original.',
+        409
+      );
     }
   }
 

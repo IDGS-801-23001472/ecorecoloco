@@ -1,6 +1,7 @@
 
 const mongoose = require('mongoose');
 const models = require('../models');
+const { activeShifts, shiftHours, listShifts } = require('./turnos');
 const { RequestError, date } = require('./chofer-domain');
 
 const localDate = new Intl.DateTimeFormat('sv-SE', {
@@ -293,8 +294,7 @@ async function catalogOptions() {
     models.Driver.find({ activo: true })
       .sort({ nombre: 1 }).lean(),
 
-    models.Shift.find({ activo: true })
-      .sort({ horaInicio: 1 }).lean(),
+    listShifts(),
 
     models.Contract.find({ activo: true })
       .populate({ path: 'clienteId', select: 'nombre' })
@@ -435,10 +435,10 @@ async function assign(userId, body) {
         })
         .session(session),
 
-      models.Shift.findOne({
-        _id: shiftId,
-        activo: true,
-      }).session(session),
+        models.Shift.findOne({
+          _id: shiftId,
+          ...activeShifts,
+      }).session(session).lean(),
 
       models.Route.findOne({
         _id: routeId,
@@ -447,6 +447,7 @@ async function assign(userId, body) {
     ]);
 
     const account = driver?.cuentaId;
+    const hours = shiftHours(shift);
 
     if (
       !driver ||
@@ -457,7 +458,7 @@ async function assign(userId, body) {
       Number(account.rolId.codigo) !== 3 ||
       !driver.vencimientoLicencia ||
       driver.vencimientoLicencia < day ||
-      !shift ||
+      !hours ||
       !route
     ) {
       throw new RequestError(
@@ -494,8 +495,8 @@ async function assign(userId, body) {
 
       return serviceState !== 'pendiente' ||
         alreadyAssigned ||
-        time < shift.horaInicio ||
-        time >= shift.horaFin;
+        time < hours.horaInicio ||
+        time >= hours.horaFin;
     });
 
     if (invalid) {
@@ -517,7 +518,7 @@ async function assign(userId, body) {
     })
       .populate({
         path: 'turnoId',
-        select: 'horaInicio horaFin',
+        select: 'horaInicio horaFin hora_inicio hora_fin',
       })
       .session(session)
       .lean();
@@ -537,9 +538,10 @@ async function assign(userId, body) {
         String(otherShiftId) === String(shiftId) &&
         String(other.choferId) !== String(driverId);
 
-      const overlaps = other.turnoId &&
-        other.turnoId.horaInicio < shift.horaFin &&
-        other.turnoId.horaFin > shift.horaInicio;
+      const otherHours = shiftHours(other.turnoId);
+      const overlaps = otherHours &&
+        otherHours.horaInicio < hours.horaFin &&
+        otherHours.horaFin > hours.horaInicio;
 
       return sameRouteSlot || (
         String(other.choferId) === String(driverId) &&
@@ -796,12 +798,8 @@ async function customerAction(userValue, visitValue, body) {
 
       const visitTime = clockOf(visit.fecha);
 
-      const [availableShift, eligibleDrivers] = await Promise.all([
-        models.Shift.exists({
-          activo: true,
-          horaInicio: { $lte: visitTime },
-          horaFin: { $gt: visitTime },
-        }).session(session),
+      const [shifts, eligibleDrivers] = await Promise.all([
+        listShifts(session),
 
         models.Driver.find({
           activo: true,
@@ -818,6 +816,10 @@ async function customerAction(userValue, visitValue, body) {
         driver.cuentaId?.activo === true &&
         driver.cuentaId?.rolId?.activo === true &&
         Number(driver.cuentaId.rolId.codigo) === 3
+      );
+
+      const availableShift = shifts.some(shift =>
+        shift.horaInicio <= visitTime && visitTime < shift.horaFin
       );
 
       if (!availableShift || !availableDriver) {
