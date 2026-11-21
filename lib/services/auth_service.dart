@@ -18,7 +18,7 @@ class AuthService {
   // - Si usas un celular físico en tu red WiFi: 'http://TU_IP_LOCAL:3000/api'
   static const String baseUrl = String.fromEnvironment(
     'API_BASE_URL',
-    defaultValue: 'http://192.168.1.10:3000/api',
+    defaultValue: 'https://ecorecoloco-api.onrender.com/api',
   );
 
   static Future<UsuarioModel> login(String usuario, String password) async {
