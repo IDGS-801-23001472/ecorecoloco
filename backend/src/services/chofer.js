@@ -27,6 +27,14 @@ const {
 
 const Oid = mongoose.Types.ObjectId;
 
+const activeCatalogEntry = {
+  $or: [{ activo: true }, { activo: { $exists: false }, estado: 1 }],
+};
+
+function wasteUnit(waste) {
+  return waste.unidadMedida || waste.unidad_medida || 'unidad';
+}
+
 // ========================================
 // FECHAS
 // ========================================
@@ -498,6 +506,7 @@ async function detail(user, stopId) {
       fk_recoleccion: ref(sale.recoleccionId),
 
       folio: sale.folio,
+      fecha: localTime(sale.fecha),
 
       subtotal: dec(sale.subtotal),
       iva: dec(sale.iva),
@@ -655,11 +664,9 @@ async function serviceData(stop, input, session) {
   }
 
   const wastesQ = Waste.find({
-    _id: {
-      $in: items.map(x => x.wasteId),
-    },
-    activo: true,
-  }).select('nombre unidadMedida');
+    _id: { $in: items.map(x => x.wasteId) },
+    ...activeCatalogEntry,
+  }).select('nombre unidadMedida unidad_medida');
 
   if (session) wastesQ.session(session);
 
@@ -711,13 +718,9 @@ async function serviceData(stop, input, session) {
 
   const priorKg = previous.reduce(
     (sum, collection) =>
-      sum + collection.residuos
+      sum + (collection.residuos ?? [])
         .filter(x => x.activo !== false)
-        .reduce(
-          (weight, item) =>
-            weight + cents(item.peso),
-          0n
-        ),
+        .reduce((weight, item) => weight + cents(item.peso), 0n),
     0n
   );
 
@@ -727,20 +730,21 @@ async function serviceData(stop, input, session) {
   );
 
   const quote = calculate({
-    monto: dec(contract.cuotaPorVisita),
+    monto: contract.cuotaPorVisita == null
+      ? null
+      : dec(contract.cuotaPorVisita),
 
-    iva_porcentaje:
-      dec(contract.ivaPorcentaje),
+    iva_porcentaje: contract.ivaPorcentaje == null
+      ? null
+      : dec(contract.ivaPorcentaje),
 
-    kilos_mensuales:
-      contract.kilosMensuales == null
-        ? null
-        : dec(contract.kilosMensuales),
+    kilos_mensuales: contract.kilosMensuales == null
+      ? null
+      : dec(contract.kilosMensuales),
 
-    tarifa_excedente:
-      contract.tarifaExcedente == null
-        ? null
-        : dec(contract.tarifaExcedente),
+    tarifa_excedente: contract.tarifaExcedente == null
+      ? null
+      : dec(contract.tarifaExcedente),
   }, priorKg, currentKg);
 
   return {
@@ -1037,7 +1041,7 @@ async function complete(user, stopId, body) {
           desechoId: item.wasteId,
           cantidad: dec128(item.quantity),
           peso: dec128(item.weight),
-          unidadMedida: item.waste.unidadMedida,
+          unidadMedida: wasteUnit(item.waste),
           descripcion: item.waste.nombre,
         })),
 
@@ -1199,7 +1203,7 @@ async function pay(user, stopId, body) {
 
       const method = await PaymentMethod.exists({
         _id: methodId,
-        activo: true,
+        ...activeCatalogEntry,
       }).session(session);
 
       if (!method) {
@@ -1295,6 +1299,7 @@ async function manifest(user, stopId) {
 
   return {
     folio: doc.folio,
+    tiene_firma: Boolean(stop.servicio?.firma?.length),
     origen: doc.origen,
     destino: doc.destino,
     observaciones: doc.observaciones,
@@ -1302,13 +1307,8 @@ async function manifest(user, stopId) {
     cliente: doc.clienteNombre,
     chofer: doc.choferNombre,
 
-    fecha_emision: localTime(
-      doc.fechaEmision
-    ),
-
-    fecha_entrega: localTime(
-      doc.entrega?.fecha
-    ),
+    fecha_emision: localTime(doc.fechaEmision),
+    fecha_entrega: localTime(doc.entrega?.fecha),
 
     residuos: (doc.residuos || []).map(item => ({
       descripcion: item.descripcion,
@@ -1445,16 +1445,12 @@ async function evidence(user, stopId, type) {
 
 async function catalog() {
   const [wastes, methods] = await Promise.all([
-    Waste.find({
-      activo: true,
-    })
-      .select('nombre')
+    Waste.find(activeCatalogEntry)
+      .select('nombre unidadMedida unidad_medida')
       .sort({ nombre: 1 })
       .lean(),
 
-    PaymentMethod.find({
-      activo: true,
-    })
+    PaymentMethod.find(activeCatalogEntry)
       .select('nombre')
       .sort({ nombre: 1 })
       .lean(),
@@ -1464,6 +1460,7 @@ async function catalog() {
     residuos: wastes.map(x => ({
       id: ref(x),
       nombre: x.nombre,
+      unidad_medida: wasteUnit(x),
     })),
 
     metodos: methods.map(x => ({

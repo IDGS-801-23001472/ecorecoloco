@@ -122,44 +122,58 @@ class _ChoferServicioState extends State<ChoferServicio> {
     ),
   );
 
-  Widget _capture(Json catalog) => Form(
-    key: _form,
-    child: AbsorbPointer(
-      absorbing: _busy,
-      child: ListView(
-        padding: const EdgeInsets.all(16),
-        children: [
-          for (var index = 0; index < _items.length; index++)
-            _wasteCard(index, rows(catalog, 'residuos')),
-          TextButton.icon(
-            onPressed: _items.length >= rows(catalog, 'residuos').length
-                ? null
-                : () => setState(() => _items.add(_WasteInput())),
-            icon: const Icon(Icons.add),
-            label: const Text('Agregar tipo de residuo'),
-          ),
-          _requiredField(_origin, 'Origen'),
-          _requiredField(_destination, 'Destino'),
-          TextFormField(
-            controller: _supplies,
-            maxLength: 255,
-            decoration: const InputDecoration(labelText: 'Insumos utilizados'),
-          ),
-          TextFormField(
-            controller: _notes,
-            maxLength: 255,
-            decoration: const InputDecoration(
-              labelText: 'Observaciones del servicio',
+  Widget _capture(Json catalog) {
+    final wastes = rows(catalog, 'residuos');
+    if (wastes.isEmpty) {
+      return const Center(
+        child: Padding(
+          padding: EdgeInsets.all(16),
+          child: Text('No hay residuos activos en el catálogo.'),
+        ),
+      );
+    }
+
+    return Form(
+      key: _form,
+      child: AbsorbPointer(
+        absorbing: _busy,
+        child: ListView(
+          padding: const EdgeInsets.all(16),
+          children: [
+            for (var index = 0; index < _items.length; index++)
+              _wasteCard(index, wastes),
+            TextButton.icon(
+              onPressed: _items.length >= wastes.length || _items.length >= 50
+                  ? null
+                  : () => setState(() => _items.add(_WasteInput())),
+              icon: const Icon(Icons.add),
+              label: const Text('Agregar tipo de residuo'),
             ),
-          ),
-          FilledButton(
-            onPressed: _busy ? null : _preview,
-            child: Text(_busy ? 'Calculando…' : 'Calcular cargos'),
-          ),
-        ],
+            _requiredField(_origin, 'Origen'),
+            _requiredField(_destination, 'Destino'),
+            TextFormField(
+              controller: _supplies,
+              maxLength: 255,
+              decoration: const InputDecoration(
+                labelText: 'Insumos utilizados',
+              ),
+            ),
+            TextFormField(
+              controller: _notes,
+              maxLength: 255,
+              decoration: const InputDecoration(
+                labelText: 'Observaciones del servicio',
+              ),
+            ),
+            FilledButton(
+              onPressed: _busy ? null : _preview,
+              child: Text(_busy ? 'Calculando…' : 'Calcular cargos'),
+            ),
+          ],
+        ),
       ),
-    ),
-  );
+    );
+  }
 
   Widget _wasteCard(int index, List<Json> catalog) {
     final item = _items[index];
@@ -172,14 +186,15 @@ class _ChoferServicioState extends State<ChoferServicio> {
             DropdownButtonFormField<String>(
               initialValue: item.waste,
               isExpanded: true,
-              decoration: const InputDecoration(
-                labelText: 'Tipo de residuo',
-              ),
+              decoration: const InputDecoration(labelText: 'Tipo de residuo'),
               items: [
                 for (final entry in catalog)
                   DropdownMenuItem<String>(
                     value: entry['id'].toString(),
-                    child: Text('${entry['nombre']}'),
+                    child: Text(
+                      '${entry['nombre']} · ${entry['unidad_medida'] ?? 'unidad'}',
+                      overflow: TextOverflow.ellipsis,
+                    ),
                   ),
               ],
               onChanged: (value) => item.waste = value,
@@ -187,15 +202,9 @@ class _ChoferServicioState extends State<ChoferServicio> {
                 if (value == null) {
                   return 'Selecciona un residuo';
                 }
-
-                if (
-                  _items.where(
-                    (other) => other.waste == value,
-                  ).length > 1
-                ) {
+                if (_items.where((other) => other.waste == value).length > 1) {
                   return 'Agrupa los residuos del mismo tipo';
                 }
-
                 return null;
               },
             ),
@@ -265,7 +274,9 @@ class _ChoferServicioState extends State<ChoferServicio> {
           ),
           FilledButton(
             onPressed: _busy ? null : _finish,
-            child: Text(_busy ? 'Guardando…' : 'Finalizar y emitir manifiesto'),
+            child: Text(
+              _busy ? 'Guardando…' : 'Finalizar y emitir comprobantes',
+            ),
           ),
           TextButton(
             onPressed: _busy ? null : () => setState(() => _quote = null),

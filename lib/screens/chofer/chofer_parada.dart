@@ -8,6 +8,7 @@ import '../../services/chofer_api.dart';
 import 'chofer_servicio.dart';
 import 'chofer_widgets.dart';
 import 'manifiesto_pdf.dart';
+import 'ticket_venta_pdf.dart';
 
 class ChoferParada extends StatefulWidget {
   const ChoferParada({super.key, required this.api, required this.id});
@@ -216,6 +217,7 @@ class _ChoferParadaState extends State<ChoferParada> {
     final canPay =
         stop['es_hoy'] == true &&
         (double.tryParse('${sale['saldo']}') ?? 0) > 0;
+
     return Card(
       child: Padding(
         padding: const EdgeInsets.all(12),
@@ -230,6 +232,7 @@ class _ChoferParadaState extends State<ChoferParada> {
                 Text('${line['concepto']} · ${mxn(line['subtotal'])}'),
             if (isCurrent) Text('IVA ${mxn(sale['iva'])}'),
             Text('Total ${mxn(sale['total'])} · Saldo ${mxn(sale['saldo'])}'),
+            if (isCurrent) TicketVentaPdfButton(stop: stop, sale: sale),
             if (canPay)
               TextButton(
                 onPressed: _busy
@@ -408,9 +411,7 @@ class _PaymentState extends State<_Payment> {
             DecimalField(controller: _amount, label: 'Importe recibido'),
             DropdownButtonFormField<String>(
               initialValue: _method,
-              decoration: const InputDecoration(
-                labelText: 'Método de pago',
-              ),
+              decoration: const InputDecoration(labelText: 'Método de pago'),
               items: [
                 for (final method in rows(catalog, 'metodos'))
                   DropdownMenuItem<String>(
@@ -605,6 +606,9 @@ class _ManifestState extends State<ChoferManifiesto> {
           ManifiestoPdfButton(
             manifest: manifest,
             items: rows(manifest, 'residuos'),
+            loadSignature: manifest['tiene_firma'] == true
+                ? () => widget.api.evidence('${widget.path}/evidencias/firma')
+                : null,
           ),
           for (final item in rows(manifest, 'residuos'))
             ListTile(

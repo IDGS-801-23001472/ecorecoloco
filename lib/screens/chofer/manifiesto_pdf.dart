@@ -1,3 +1,5 @@
+import 'dart:typed_data';
+
 import 'package:flutter/material.dart';
 import 'package:pdf/pdf.dart';
 import 'package:pdf/widgets.dart' as pw;
@@ -11,10 +13,12 @@ class ManifiestoPdfButton extends StatefulWidget {
     super.key,
     required this.manifest,
     required this.items,
+    this.loadSignature,
   });
 
   final Json manifest;
   final List<Json> items;
+  final Future<Uint8List> Function()? loadSignature;
 
   @override
   State<ManifiestoPdfButton> createState() => _ManifiestoPdfButtonState();
@@ -28,10 +32,12 @@ class _ManifiestoPdfButtonState extends State<ManifiestoPdfButton> {
     try {
       final manifest = widget.manifest;
       final folio = manifest['folio'].toString();
+      final signature = await widget.loadSignature?.call();
       final document = pw.Document(
         title: 'Manifiesto $folio',
         author: 'EcoReco',
       );
+
       document.addPage(
         pw.MultiPage(
           pageFormat: PdfPageFormat.a4,
@@ -69,16 +75,23 @@ class _ManifiestoPdfButtonState extends State<ManifiestoPdfButton> {
                 padding: const pw.EdgeInsets.only(top: 8),
                 child: pw.Text(
                   '${item['descripcion'] ?? 'Residuo'}\n'
-                  'Cantidad: ${item['cantidad']}  ·  Peso: ${item['peso']} kg',
+                  'Cantidad: ${item['cantidad']} ${item['unidad_medida'] ?? ''}'
+                  '  ·  Peso: ${item['peso']} kg',
                 ),
               ),
+            if (signature != null) ...[
+              pw.SizedBox(height: 16),
+              pw.Text('Firma del cliente'),
+              pw.Image(pw.MemoryImage(signature), width: 180, height: 75),
+            ],
           ],
         ),
       );
+
+      final safeFolio = folio.replaceAll(RegExp(r'[^A-Za-z0-9_-]'), '_');
       await Printing.sharePdf(
         bytes: await document.save(),
-        filename:
-            'manifiesto-${folio.replaceAll(RegExp(r"[^A-Za-z0-9_-]"), "_")}.pdf',
+        filename: 'manifiesto-$safeFolio.pdf',
       );
     } on Exception catch (error) {
       if (mounted) showMessage(context, error);
