@@ -29,7 +29,10 @@ class AuthService {
           .post(
             Uri.parse('$baseUrl/auth/login'),
             headers: {'Content-Type': 'application/json'},
-            body: jsonEncode({'usuario': usuario, 'pass': passBase64}),
+            body: jsonEncode({
+              'usuario': usuario,
+              'pass': password,
+            }),
           )
           .timeout(const Duration(seconds: 15));
 
@@ -42,7 +45,7 @@ class AuthService {
       }
       if (response.statusCode >= 500) {
         throw const LoginException(
-          'La API no pudo iniciar sesión. Revisa la terminal del backend y su conexión con MySQL.',
+          'La API no pudo iniciar sesión. Revisa la terminal del backend y su conexión con MongoDB Atlas.',
         );
       }
       throw LoginException(

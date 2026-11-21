@@ -169,23 +169,33 @@ class _ChoferServicioState extends State<ChoferServicio> {
         padding: const EdgeInsets.all(12),
         child: Column(
           children: [
-            DropdownButtonFormField<int>(
+            DropdownButtonFormField<String>(
               initialValue: item.waste,
               isExpanded: true,
-              decoration: const InputDecoration(labelText: 'Tipo de residuo'),
+              decoration: const InputDecoration(
+                labelText: 'Tipo de residuo',
+              ),
               items: [
                 for (final entry in catalog)
-                  DropdownMenuItem(
-                    value: entry['id'] as int,
+                  DropdownMenuItem<String>(
+                    value: entry['id'].toString(),
                     child: Text('${entry['nombre']}'),
                   ),
               ],
               onChanged: (value) => item.waste = value,
               validator: (value) {
-                if (value == null) return 'Selecciona un residuo';
-                if (_items.where((other) => other.waste == value).length > 1) {
+                if (value == null) {
+                  return 'Selecciona un residuo';
+                }
+
+                if (
+                  _items.where(
+                    (other) => other.waste == value,
+                  ).length > 1
+                ) {
                   return 'Agrupa los residuos del mismo tipo';
                 }
+
                 return null;
               },
             ),
@@ -268,7 +278,7 @@ class _ChoferServicioState extends State<ChoferServicio> {
 }
 
 class _WasteInput {
-  int? waste;
+  String? waste;
   final quantity = TextEditingController();
   final weight = TextEditingController();
   final notes = TextEditingController();

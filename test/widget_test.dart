@@ -77,14 +77,16 @@ void main() {
 class _RouteApi extends ChoferApi {
   _RouteApi() : super('test');
 
+  static const stopId = '507f1f77bcf86cd799439011';
+
   int routeLoads = 0;
 
   @override
   Future<Json> get(String path, [Map<String, String>? query]) async {
     const stop = {
-      'pk_recoleccion': 1,
-      'fk_ruta': 1,
-      'fk_turno': 1,
+      'pk_recoleccion': stopId,
+      'fk_ruta': '507f1f77bcf86cd799439012',
+      'fk_turno': '507f1f77bcf86cd799439013',
       'fecha': '2026-11-07T09:00:00',
       'cliente': 'Cliente de prueba',
       'ruta': 'Ruta de prueba',
@@ -98,7 +100,7 @@ class _RouteApi extends ChoferApi {
         'paradas': [stop],
       };
     }
-    if (path == 'paradas/1') {
+    if (path == 'paradas/$stopId') {
       return {...stop, 'ventas': <Json>[], 'pagos': <Json>[]};
     }
     throw StateError('Ruta inesperada: $path');

@@ -63,5 +63,3 @@ key.properties
 *.key
 
 # Volcados locales y respaldos generados por backend/scripts/backup.ps1
-/eco_reco.sql
-eco_reco-*.sql

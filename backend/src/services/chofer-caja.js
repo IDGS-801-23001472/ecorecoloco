@@ -1,155 +1,679 @@
-const { db, transaction, getStop, requireOpen, today, now, audit } = require('./chofer');
-const { RequestError, amount, decimal, id, key, text } = require('./chofer-domain');
+
+const mongoose = require('mongoose');
+
+const {
+  Driver,
+  Collection,
+  Payment,
+  Expense,
+  Cut,
+} = require('../models');
+
+const {
+  transaction,
+  getStop,
+  requireOpen,
+  today,
+  audit,
+} = require('./chofer');
+
+const {
+  RequestError,
+  decimal,
+  amount,
+  date,
+  key,
+  text,
+} = require('./chofer-domain');
+
+// ========================================
+// UTILIDADES
+// ========================================
+
+function objectId(value, label = 'Identificador') {
+  if (
+    typeof value !== 'string' ||
+    !/^[0-9a-f]{24}$/i.test(value)
+  ) {
+    throw new RequestError(`${label} inválido.`);
+  }
+
+  return new mongoose.Types.ObjectId(value);
+}
+
+function asId(value) {
+  return value?._id?.toString() ||
+    value?.toString() ||
+    null;
+}
+
+function cents(value, label = 'Importe') {
+  return decimal(
+    value?.toString() ?? '0',
+    label,
+    true
+  );
+}
+
+function decimal128(value) {
+  return mongoose.Types.Decimal128.fromString(
+    amount(value)
+  );
+}
+
+// ========================================
+// FECHAS LOCALES
+// ========================================
+
+const fmt = new Intl.DateTimeFormat('en-GB', {
+  timeZone: 'America/Mexico_City',
+  year: 'numeric',
+  month: '2-digit',
+  day: '2-digit',
+  hour: '2-digit',
+  minute: '2-digit',
+  second: '2-digit',
+  hourCycle: 'h23',
+});
+
+function localTime(value) {
+  if (!value) return null;
+
+  const p = Object.fromEntries(
+    fmt.formatToParts(new Date(value))
+      .filter(item => item.type !== 'literal')
+      .map(item => [item.type, item.value])
+  );
+
+  return `${p.year}-${p.month}-${p.day}T${p.hour}:${p.minute}:${p.second}`;
+}
+
+function startOfLocalDay(day) {
+  const probe = new Date(`${day}T12:00:00Z`);
+
+  const p = Object.fromEntries(
+    fmt.formatToParts(probe)
+      .filter(item => item.type !== 'literal')
+      .map(item => [item.type, item.value])
+  );
+
+  const observedAsUtc = Date.UTC(
+    Number(p.year),
+    Number(p.month) - 1,
+    Number(p.day),
+    Number(p.hour),
+    Number(p.minute),
+    Number(p.second)
+  );
+
+  return new Date(
+    Date.parse(`${day}T00:00:00Z`) -
+    (observedAsUtc - probe.getTime())
+  );
+}
+
+function dayRange(day) {
+  date(day);
+
+  const next = new Date(`${day}T00:00:00Z`);
+  next.setUTCDate(next.getUTCDate() + 1);
+
+  return {
+    $gte: startOfLocalDay(day),
+    $lt: startOfLocalDay(
+      next.toISOString().slice(0, 10)
+    ),
+  };
+}
+
+// ========================================
+// REGISTRAR VIÁTICO
+// ========================================
 
 async function expense(user, body) {
-  const stopId = id(body.fk_recoleccion);
-  const concept = text(body.concepto, 'Concepto', 120);
-  const value = amount(decimal(body.importe, 'Importe'));
-  const operation = key(body.clave);
-  return transaction(user, async conn => {
-    const stop = await getStop(conn, user, stopId, true);
-    const [[prior]] = await conn.execute(
-      'SELECT pk_viatico, fk_ruta, fk_turno, monto_gastado, observaciones FROM viaticos WHERE fk_usuario = ? AND clave = ?',
-      [user, operation]
+  const stopId = objectId(
+    body?.fk_recoleccion,
+    'Parada'
+  );
+
+  const concept = text(
+    body?.concepto,
+    'Concepto',
+    120
+  );
+
+  const value = decimal(
+    body?.importe,
+    'Importe'
+  );
+
+  const operation = key(body?.clave);
+  const userId = objectId(user, 'Usuario');
+
+  return transaction(user, async session => {
+    const stop = await getStop(
+      session,
+      user,
+      stopId.toString()
     );
+
+    // Evitar duplicados por reintentos.
+    const prior = await Expense.findOne({
+      usuarioId: userId,
+      clave: operation,
+    }).session(session);
+
     if (prior) {
-      if (prior.monto_gastado !== value || prior.observaciones !== concept ||
-          prior.fk_ruta !== stop.fk_ruta || prior.fk_turno !== stop.fk_turno) {
-        throw new RequestError('La clave de operación ya se usó con otros datos.', 409);
+      if (
+        asId(prior.recoleccionId) !== asId(stop._id) ||
+        asId(prior.rutaId) !== asId(stop.rutaId) ||
+        asId(prior.turnoId) !== asId(stop.turnoId) ||
+        cents(prior.importe) !== value ||
+        prior.concepto !== concept
+      ) {
+        throw new RequestError(
+          'La clave de operación ya se usó con otros datos.',
+          409
+        );
       }
-      return { pk_viatico: prior.pk_viatico };
+
+      return { pk_viatico: asId(prior) };
     }
-    const timestamp = now();
-    const day = timestamp.slice(0, 10);
-    if (stop.fecha.slice(0, 10) !== day) throw new RequestError('El gasto requiere una parada de hoy.', 409);
-    await requireOpen(conn, user, stop.fk_turno, day);
-    const [row] = await conn.execute(
-      `INSERT INTO viaticos (fk_chofer, fk_ruta, fk_usuario, fk_turno, fecha, monto_gastado, observaciones, clave)
-       SELECT fk_chofer, fk_ruta, ?, fk_turno, ?, ?, ?, ? FROM recolecciones WHERE pk_recoleccion = ?`,
-      [user, timestamp, value, concept, operation, stopId]
-    );
-    await conn.execute(
-      'INSERT INTO viaticos_detalle (fk_viatico, concepto, cantidad, monto, fecha_gasto) VALUES (?, ?, 1, ?, ?)',
-      [row.insertId, concept, value, timestamp]
-    );
-    await audit(conn, user, 'viaticos', row.insertId, 'registrar');
-    return { pk_viatico: row.insertId };
-  });
-}
 
-async function shiftData(conn, user, shift, day) {
-  const [[assigned]] = await conn.execute(
-    `SELECT r.pk_recoleccion FROM recolecciones r JOIN choferes ch ON ch.pk_chofer = r.fk_chofer
-     WHERE ch.fk_usuario = ? AND ch.estado = 1 AND r.fk_turno = ?
-       AND r.fecha_recoleccion >= ? AND r.fecha_recoleccion < DATE_ADD(?, INTERVAL 1 DAY)
-     LIMIT 1`, [user, shift, day, day]
-  );
-  if (!assigned) throw new RequestError('No tienes paradas en ese turno.', 404);
-  const [payments] = await conn.execute(
-    `SELECT p.pk_pago, p.fk_venta, p.fk_metodo_pago, p.importe, m.nombre metodo, v.folio,
-       DATE_FORMAT(p.fecha, '%Y-%m-%dT%H:%i:%s') fecha
-     FROM pagos_chofer p JOIN metodos_pago m ON m.pk_metodo_pago = p.fk_metodo_pago
-     JOIN ventas v ON v.pk_venta = p.fk_venta
-     WHERE p.fk_usuario = ? AND p.fk_turno = ? AND p.fecha >= ? AND p.fecha < DATE_ADD(?, INTERVAL 1 DAY)
-     ORDER BY p.pk_pago`, [user, shift, day, day]
-  );
-  const [expenses] = await conn.execute(
-    `SELECT observaciones concepto, monto_gastado importe
-     FROM viaticos WHERE fk_usuario = ? AND fk_turno = ? AND estado = 1
-       AND fecha >= ? AND fecha < DATE_ADD(?, INTERVAL 1 DAY) ORDER BY pk_viatico`, [user, shift, day, day]
-  );
-  const paymentTotal = payments.reduce((sum, p) => sum + decimal(p.importe, 'Pago'), 0n);
-  const cash = payments.filter(p => p.metodo.trim().toLowerCase() === 'efectivo')
-    .reduce((sum, p) => sum + decimal(p.importe, 'Pago'), 0n);
-  const costs = expenses.reduce((sum, p) => sum + decimal(p.importe, 'Gasto'), 0n);
-  return { payments, expenses, paymentTotal, cash, costs };
-}
+    const day = today();
 
-const cutFields = `x.fk_corte, c.fk_usuario, x.fk_turno, t.nombre turno, u.nombre chofer,
-  DATE_FORMAT(x.jornada, '%Y-%m-%d') jornada, c.monto_inicial, c.total_ventas, c.total_gastos,
-  x.efectivo_esperado, x.efectivo_contado, x.diferencia, x.fk_revisor, x.nota_revision,
-  DATE_FORMAT(x.fecha_revision, '%Y-%m-%dT%H:%i:%s') fecha_revision`;
-const cutJoins = `FROM cierres_chofer x JOIN cortes c ON c.pk_corte = x.fk_corte
-  JOIN usuarios u ON u.pk_usuario = x.fk_usuario JOIN turnos t ON t.pk_turno = x.fk_turno`;
-
-async function findCut(conn, user, shift, day) {
-  const [[row]] = await conn.execute(
-    `SELECT ${cutFields} ${cutJoins} WHERE x.fk_usuario = ? AND x.fk_turno = ? AND x.jornada = ?`,
-    [user, shift, day]
-  );
-  return row;
-}
-
-async function summary(user, shift, day) {
-  return transaction(user, async conn => {
-    const cut = await findCut(conn, user, shift, day);
-    const data = await shiftData(conn, user, shift, day);
-    return { corte: cut ?? null, pagos: data.payments, viaticos: data.expenses,
-      total_pagos: amount(data.paymentTotal), efectivo: amount(data.cash), gastos: amount(data.costs) };
-  });
-}
-
-async function close(user, shift, day, body) {
-  const initial = decimal(body.monto_inicial, 'Fondo inicial', true);
-  const counted = decimal(body.efectivo_contado, 'Efectivo contado', true);
-  const notes = text(body.observaciones, 'Observaciones', 255, false);
-  if (day > today()) throw new RequestError('La jornada todavía no inicia.');
-  return transaction(user, async conn => {
-    const cut = await findCut(conn, user, shift, day);
-    if (cut) {
-      if (cut.monto_inicial !== amount(initial) || cut.efectivo_contado !== amount(counted)) {
-        throw new RequestError('El turno ya fue cerrado con otros importes.', 409);
-      }
-      return cut;
-    }
-    const data = await shiftData(conn, user, shift, day);
-    const expected = initial + data.cash - data.costs;
-    const timestamp = now();
-    const [row] = await conn.execute(
-      `INSERT INTO cortes
-       (fk_usuario, fk_turno, fecha_inicio, fecha_fin, monto_inicial, total_ventas, total_gastos, monto_final, observaciones)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [user, shift, day + ' 00:00:00', timestamp, amount(initial),
-        amount(data.paymentTotal), amount(data.costs), amount(counted), notes]
-    );
-    await conn.execute(
-      `INSERT INTO cierres_chofer
-       (fk_corte, fk_usuario, fk_turno, jornada, efectivo_esperado, efectivo_contado, diferencia)
-       VALUES (?, ?, ?, ?, ?, ?, ?)`,
-      [row.insertId, user, shift, day, amount(expected), amount(counted), amount(counted - expected)]
-    );
-    if (data.payments.length) {
-      await conn.query(
-        `INSERT INTO cortes_detalle (fk_corte, fk_pago, fk_venta, fk_metodo_pago, concepto, monto, fecha)
-         VALUES ?`,
-        [data.payments.map(p => [row.insertId, p.pk_pago, p.fk_venta, p.fk_metodo_pago,
-          'Cobro', p.importe, p.fecha.replace('T', ' ')])]
+    if (stop.fechaClave !== day) {
+      throw new RequestError(
+        'El gasto requiere una parada de hoy.',
+        409
       );
     }
-    await audit(conn, user, 'cortes', row.insertId, 'cerrar');
-    return findCut(conn, user, shift, day);
+
+    await requireOpen(
+      session,
+      user,
+      asId(stop.turnoId),
+      day
+    );
+
+    const timestamp = new Date();
+
+    const [saved] = await Expense.create([{
+      choferId: stop.choferId._id,
+      rutaId: stop.rutaId._id,
+      usuarioId: userId,
+      turnoId: stop.turnoId._id,
+      recoleccionId: stop._id,
+
+      fecha: timestamp,
+      importe: decimal128(value),
+      concepto: concept,
+      clave: operation,
+
+      detalles: [{
+        concepto: concept,
+        cantidad: decimal128(100n),
+        importe: decimal128(value),
+        fecha: timestamp,
+      }],
+
+      activo: true,
+    }], { session });
+
+    await audit(
+      session,
+      user,
+      'viaticos',
+      saved._id,
+      'registrar'
+    );
+
+    return {
+      pk_viatico: asId(saved),
+    };
   });
 }
+
+// ========================================
+// MOVIMIENTOS DEL TURNO
+// ========================================
+
+async function shiftData(session, user, shiftId, day) {
+  const userId = objectId(user, 'Usuario');
+
+  const driver = await Driver.findOne({
+    cuentaId: userId,
+    activo: true,
+  })
+    .session(session)
+    .select('_id');
+
+  if (!driver) {
+    throw new RequestError(
+      'Chofer no disponible.',
+      403
+    );
+  }
+
+  const hasStops = await Collection.exists({
+    choferId: driver._id,
+    turnoId: shiftId,
+    fechaClave: day,
+  }).session(session);
+
+  if (!hasStops) {
+    throw new RequestError(
+      'No tienes paradas en ese turno.',
+      404
+    );
+  }
+
+  const range = dayRange(day);
+
+  // Las consultas en una transacción se ejecutan
+  // secuencialmente para evitar conflictos de sesión.
+
+  const payments = await Payment.find({
+    usuarioId: userId,
+    turnoId: shiftId,
+    fecha: range,
+  })
+    .populate('metodoPagoId', 'nombre')
+    .populate('ventaId', 'folio')
+    .sort({ _id: 1 })
+    .session(session)
+    .lean();
+
+  const expenses = await Expense.find({
+    usuarioId: userId,
+    turnoId: shiftId,
+    fecha: range,
+    activo: true,
+  })
+    .sort({ _id: 1 })
+    .session(session)
+    .lean();
+
+  let paymentTotal = 0n;
+  let cash = 0n;
+  let costs = 0n;
+
+  const paymentRows = payments.map(payment => {
+    const value = cents(payment.importe, 'Pago');
+
+    const method =
+      payment.metodoPagoId?.nombre || '';
+
+    paymentTotal += value;
+
+    if (
+      method.trim().toLowerCase() === 'efectivo'
+    ) {
+      cash += value;
+    }
+
+    return {
+      pk_pago: asId(payment),
+      fk_venta: asId(payment.ventaId),
+      fk_metodo_pago: asId(payment.metodoPagoId),
+
+      importe: amount(value),
+      metodo: method,
+
+      folio: payment.ventaId?.folio || '',
+      fecha: localTime(payment.fecha),
+    };
+  });
+
+  const expenseRows = expenses.map(item => {
+    const value = cents(item.importe, 'Gasto');
+
+    costs += value;
+
+    return {
+      concepto: item.concepto,
+      importe: amount(value),
+    };
+  });
+
+  return {
+    payments,
+    paymentRows,
+    expenseRows,
+    paymentTotal,
+    cash,
+    costs,
+  };
+}
+
+// ========================================
+// FORMATO DE CORTE PARA FLUTTER
+// ========================================
+
+function formatCut(cut) {
+  if (!cut) return null;
+
+  return {
+    fk_corte: asId(cut),
+    fk_usuario: asId(cut.usuarioId),
+    fk_turno: asId(cut.turnoId),
+
+    turno: cut.turnoId?.nombre || '',
+    chofer: cut.usuarioId?.nombre || '',
+
+    jornada: cut.jornada,
+
+    monto_inicial: amount(cents(cut.fondoInicial)),
+    total_ventas: amount(cents(cut.totalCobros)),
+    total_gastos: amount(cents(cut.totalViaticos)),
+
+    efectivo_esperado:
+      cut.efectivoEsperado?.toString() ?? '0.00',
+
+    efectivo_contado:
+      amount(cents(cut.efectivoContado)),
+
+    diferencia:
+      cut.diferencia?.toString() ?? '0.00',
+
+    fk_revisor: asId(cut.revisorId),
+
+    nota_revision:
+      cut.notaRevision ?? null,
+
+    fecha_revision:
+      localTime(cut.fechaRevision),
+  };
+}
+
+// ========================================
+// BUSCAR CORTE
+// ========================================
+
+async function findCut(session, user, shiftId, day) {
+  const query = Cut.findOne({
+    usuarioId: objectId(user, 'Usuario'),
+    turnoId: shiftId,
+    jornada: day,
+  })
+    .populate('usuarioId', 'nombre')
+    .populate('turnoId', 'nombre');
+
+  if (session) {
+    query.session(session);
+  }
+
+  return query.lean();
+}
+
+// ========================================
+// RESUMEN DE CAJA
+// ========================================
+
+async function summary(user, shift, day) {
+  const shiftId = objectId(shift, 'Turno');
+
+  date(day);
+
+  return transaction(user, async session => {
+    const cut = await findCut(
+      session,
+      user,
+      shiftId,
+      day
+    );
+
+    const data = await shiftData(
+      session,
+      user,
+      shiftId,
+      day
+    );
+
+    return {
+      corte: formatCut(cut),
+
+      pagos: data.paymentRows,
+      viaticos: data.expenseRows,
+
+      total_pagos: amount(data.paymentTotal),
+      efectivo: amount(data.cash),
+      gastos: amount(data.costs),
+    };
+  });
+}
+
+// ========================================
+// CERRAR TURNO Y GENERAR CORTE
+// ========================================
+
+async function close(user, shift, day, body) {
+  const shiftId = objectId(shift, 'Turno');
+
+  date(day);
+
+  const initial = decimal(
+    body?.monto_inicial,
+    'Fondo inicial',
+    true
+  );
+
+  const counted = decimal(
+    body?.efectivo_contado,
+    'Efectivo contado',
+    true
+  );
+
+  const notes = text(
+    body?.observaciones,
+    'Observaciones',
+    255,
+    false
+  );
+
+  if (day > today()) {
+    throw new RequestError(
+      'La jornada todavía no inicia.'
+    );
+  }
+
+  return transaction(user, async session => {
+    const previous = await findCut(
+      session,
+      user,
+      shiftId,
+      day
+    );
+
+    if (previous) {
+      if (
+        cents(previous.fondoInicial) !== initial ||
+        cents(previous.efectivoContado) !== counted
+      ) {
+        throw new RequestError(
+          'El turno ya fue cerrado con otros importes.',
+          409
+        );
+      }
+
+      return formatCut(previous);
+    }
+
+    const data = await shiftData(
+      session,
+      user,
+      shiftId,
+      day
+    );
+
+    // Fondo inicial + efectivo recibido - viáticos.
+    const expected =
+      initial + data.cash - data.costs;
+
+    const timestamp = new Date();
+
+    // Guardar instantánea de los cobros del turno.
+    const movements = data.payments.map(payment => ({
+      pagoId: payment._id,
+
+      ventaId:
+        payment.ventaId?._id,
+
+      metodoPagoId:
+        payment.metodoPagoId?._id,
+
+      concepto: 'Cobro',
+
+      importe: payment.importe,
+      fecha: payment.fecha,
+    }));
+
+    if (movements.some(item =>
+      !item.ventaId || !item.metodoPagoId
+    )) {
+      throw new RequestError(
+        'Hay pagos con referencias incompletas.',
+        409
+      );
+    }
+
+    const [saved] = await Cut.create([{
+      usuarioId: objectId(user, 'Usuario'),
+      turnoId: shiftId,
+      jornada: day,
+
+      fechaInicio: dayRange(day).$gte,
+      fechaFin: timestamp,
+
+      fondoInicial: decimal128(initial),
+      totalCobros: decimal128(data.paymentTotal),
+      totalViaticos: decimal128(data.costs),
+
+      efectivoFinal: decimal128(counted),
+
+      efectivoEsperado: decimal128(expected),
+      efectivoContado: decimal128(counted),
+      diferencia: decimal128(counted - expected),
+
+      observaciones: notes,
+      movimientos: movements,
+    }], { session });
+
+    await audit(
+      session,
+      user,
+      'cortes',
+      saved._id,
+      'cerrar'
+    );
+
+    const cut = await findCut(
+      session,
+      user,
+      shiftId,
+      day
+    );
+
+    return formatCut(cut);
+  });
+}
+
+// ========================================
+// CORTES PARA ADMINISTRACIÓN
+// ========================================
 
 async function listCuts(day) {
-  const [rows] = await db.execute(
-    `SELECT ${cutFields} ${cutJoins} WHERE x.jornada = ? ORDER BY x.fk_revisor IS NOT NULL, u.nombre, t.nombre`,
-    [day]
-  );
-  return { fecha: day, cortes: rows };
-}
+  date(day);
 
-async function review(user, cutId, body) {
-  const notes = text(body.nota_revision, 'Nota de revisión', 255);
-  return transaction(user, async conn => {
-    const [result] = await conn.execute(
-      `UPDATE cierres_chofer SET fk_revisor = ?, fecha_revision = ?, nota_revision = ?
-       WHERE fk_corte = ? AND fk_revisor IS NULL`, [user, now(), notes, cutId]
-    );
-    if (!result.affectedRows) throw new RequestError('Corte inexistente o previamente revisado.', 409);
-    await audit(conn, user, 'cortes', cutId, 'revisar');
-    return { fk_corte: cutId };
+  const cuts = await Cut.find({
+    jornada: day,
+  })
+    .populate('usuarioId', 'nombre')
+    .populate('turnoId', 'nombre')
+    .lean();
+
+  // Mostrar los pendientes de revisión primero.
+  cuts.sort((a, b) => {
+    const aReviewed = a.revisorId ? 1 : 0;
+    const bReviewed = b.revisorId ? 1 : 0;
+
+    return aReviewed - bReviewed ||
+      (a.usuarioId?.nombre || '').localeCompare(
+        b.usuarioId?.nombre || '',
+        'es'
+      ) ||
+      (a.turnoId?.nombre || '').localeCompare(
+        b.turnoId?.nombre || '',
+        'es'
+      );
   });
+
+  return {
+    fecha: day,
+    cortes: cuts.map(formatCut),
+  };
 }
 
-module.exports = { expense, summary, close, listCuts, review };
+// ========================================
+// REVISIÓN ADMINISTRATIVA
+// ========================================
+
+async function review(user, cut, body) {
+  const cutId = objectId(cut, 'Corte');
+  const reviewer = objectId(user, 'Usuario');
+
+  const note = text(
+    body?.nota_revision,
+    'Nota de revisión',
+    255
+  );
+
+  return transaction(user, async session => {
+    // Solo puede revisarse una vez.
+    const updated = await Cut.findOneAndUpdate(
+      {
+        _id: cutId,
+        revisorId: null,
+      },
+      {
+        $set: {
+          revisorId: reviewer,
+          fechaRevision: new Date(),
+          notaRevision: note,
+        },
+      },
+      {
+        new: true,
+        session,
+        runValidators: true,
+      }
+    );
+
+    if (!updated) {
+      throw new RequestError(
+        'Corte inexistente o previamente revisado.',
+        409
+      );
+    }
+
+    await audit(
+      session,
+      user,
+      'cortes',
+      cutId,
+      'revisar'
+    );
+
+    return {
+      fk_corte: asId(cutId),
+    };
+  }, [`corte:${cutId}`]);
+}
+
+module.exports = {
+  expense,
+  summary,
+  close,
+  listCuts,
+  review,
+};

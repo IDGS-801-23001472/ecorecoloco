@@ -232,7 +232,7 @@ class _ClienteHomeState extends State<ClienteHome> {
             context,
             MaterialPageRoute(
               builder: (_) =>
-                  _CustomerManifest(api: widget.api, id: item['id'] as int),
+                  _CustomerManifest(api: widget.api, id: item['id'].toString()),
             ),
           ),
         ),
@@ -246,12 +246,17 @@ class _ClienteHomeState extends State<ClienteHome> {
 }
 
 class _CustomerManifest extends StatefulWidget {
-  const _CustomerManifest({required this.api, required this.id});
+  const _CustomerManifest({
+    required this.api,
+    required this.id,
+  });
+
   final ChoferApi api;
-  final int id;
+  final String id;
 
   @override
-  State<_CustomerManifest> createState() => _CustomerManifestState();
+  State<_CustomerManifest> createState() =>
+      _CustomerManifestState();
 }
 
 class _CustomerManifestState extends State<_CustomerManifest> {

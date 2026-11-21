@@ -13,7 +13,7 @@ class ChoferParada extends StatefulWidget {
   const ChoferParada({super.key, required this.api, required this.id});
 
   final ChoferApi api;
-  final int id;
+  final String id;
 
   @override
   State<ChoferParada> createState() => _ChoferParadaState();
@@ -355,7 +355,7 @@ class _PaymentState extends State<_Payment> {
   late final _amount = TextEditingController(text: '${widget.sale['saldo']}');
   final _key = operationKey();
   late Future<Json> _catalog;
-  int? _method;
+  String? _method;
   bool _busy = false;
 
   @override
@@ -406,13 +406,15 @@ class _PaymentState extends State<_Payment> {
           children: [
             Text('Saldo pendiente ${mxn(widget.sale['saldo'])}'),
             DecimalField(controller: _amount, label: 'Importe recibido'),
-            DropdownButtonFormField<int>(
+            DropdownButtonFormField<String>(
               initialValue: _method,
-              decoration: const InputDecoration(labelText: 'Método de pago'),
+              decoration: const InputDecoration(
+                labelText: 'Método de pago',
+              ),
               items: [
                 for (final method in rows(catalog, 'metodos'))
-                  DropdownMenuItem(
-                    value: method['id'] as int,
+                  DropdownMenuItem<String>(
+                    value: method['id'].toString(),
                     child: Text('${method['nombre']}'),
                   ),
               ],

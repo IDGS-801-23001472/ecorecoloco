@@ -14,7 +14,7 @@ class ChoferCaja extends StatefulWidget {
 
   final ChoferApi api;
   final String day;
-  final int shift;
+  final String shift;
   final String name;
 
   @override
@@ -138,7 +138,7 @@ class _ExpenseFormState extends State<_ExpenseForm> {
   final _concept = TextEditingController();
   final _amount = TextEditingController();
   final _operation = operationKey();
-  int? _stop;
+  String? _stop;
   bool _busy = false;
 
   @override
@@ -174,18 +174,24 @@ class _ExpenseFormState extends State<_ExpenseForm> {
       child: ListView(
         padding: const EdgeInsets.all(16),
         children: [
-          DropdownButtonFormField<int>(
+          DropdownButtonFormField<String>(
             initialValue: _stop,
             isExpanded: true,
-            decoration: const InputDecoration(labelText: 'Parada de la ruta'),
+            decoration: const InputDecoration(
+              labelText: 'Parada de la ruta',
+            ),
             items: [
               for (final stop in widget.stops)
-                DropdownMenuItem(
-                  value: stop['pk_recoleccion'] as int,
-                  child: Text('${stop['ruta']} · ${stop['cliente']}'),
+                DropdownMenuItem<String>(
+                  value: stop['pk_recoleccion'].toString(),
+                  child: Text(
+                    '${stop['ruta']} · ${stop['cliente']}',
+                  ),
                 ),
             ],
-            onChanged: _busy ? null : (value) => setState(() => _stop = value),
+            onChanged: _busy
+                ? null
+                : (value) => setState(() => _stop = value),
             validator: (value) =>
                 value == null ? 'Selecciona una parada' : null,
           ),

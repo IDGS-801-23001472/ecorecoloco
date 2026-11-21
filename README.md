@@ -1,10 +1,10 @@
 # EcoReco
 
-Aplicación Flutter con API Express y MySQL para gestionar la recolección de residuos.
+Aplicación Flutter con API Express y MongoDB Atlas para gestionar la recolección de residuos.
 
 ## Perfiles de operación
 
-- **Vendedor** registra clientes y contratos, programa visitas individuales o recurrentes y organiza las paradas por ruta, chofer y turno. Un borrador solo aparece al chofer después de publicar sus paradas.
+- **Operaciones (rol 2)** registra clientes y contratos, programa visitas individuales o recurrentes y organiza las paradas por ruta, chofer y turno. Un borrador solo aparece al chofer después de publicar sus paradas.
 - **Cliente** consulta sus visitas, confirma, cancela o cambia la fecha conservando la hora del contrato. Puede consultar contratos, saldos, manifiestos y avisos.
 - **Administración** gestiona usuarios, roles y catálogos, consulta la agenda, supervisa ventas e incidencias, revisa cortes y consulta la bitácora del día.
 
@@ -16,9 +16,9 @@ Los pagos pueden cubrir todo el saldo, una parte o dejar el adeudo abierto. Un a
 
 ## Puesta en marcha
 
-1. En una base **nueva de desarrollo**, importa `eco_reco.sql`. Ese archivo elimina y vuelve a crear `eco_reco`. Para una base existente, empieza en el siguiente paso.
-2. Selecciona la base correspondiente y ejecuta una vez cada migración en orden, `backend/migrations/001_chofer.sql` y `backend/migrations/002_operacion.sql`. Si ya probaste el perfil de chofer, aplica únicamente la segunda. Configura `DB_HOST`, `DB_PORT`, `DB_USER`, `DB_PASSWORD`, `DB_NAME` y, si aplica, `PORT` en `backend/.env`.
-3. Desde `backend`, ejecuta `npm ci` y `npm start`.
+1. Copia `backend/.env.example` a `backend/.env`. Configura `MONGODB_URI` con la conexión de Atlas, `MONGODB_DB` (por defecto `ecoreco`) y las variables `ADMIN_*` de la cuenta inicial. Conserva las credenciales en ese archivo local.
+2. Desde `backend`, ejecuta `npm ci`, `npm run db:init` y `npm start`. La inicialización crea las colecciones, índices, roles, turnos, métodos de pago y la cuenta administradora.
+3. Comprueba `GET /api/health` y `GET /api/ready` en el puerto configurado (3000 por defecto).
 4. Desde la raíz, ejecuta `flutter pub get` y `flutter devices`. Para un teléfono Android conectado por USB, usa el identificador del dispositivo en ambos comandos. Si CMD no reconoce `adb`, usa la ruta completa de `platform-tools\adb.exe` dentro de tu Android SDK.
 
    ```cmd
@@ -26,27 +26,23 @@ Los pagos pueden cubrir todo el saldo, una parte o dejar el adeudo abierto. Un a
    flutter run -d ID_ANDROID --dart-define=API_BASE_URL=http://127.0.0.1:3000/api
    ```
 
-Para probar con datos iniciales, importa también `backend/demo/chofer.sql` en la base de desarrollo. Inicia sesión como `cobrador1` con contraseña `12345`. El script añade tres paradas para la jornada actual. La cuenta `admin_chofer_demo` usa la misma contraseña y permite revisar el corte desde Flutter.
-
-Para probar la operación completa, entra como `vendedor1` y crea un contrato con el cliente de ejemplo, una fecha de inicio vigente y una hora dentro del turno. En **Calendario y rutas**, genera las visitas o programa una manualmente. Selecciona las paradas en el orden de visita, elige ruta, chofer y turno, y activa **Publicar para el chofer**. Puedes confirmar una visita desde `cliente1` y luego abrirla desde `cobrador1`. Las cuentas iniciales usan `12345`.
-
-Para generar visitas desde un contrato previo, completa su horario y selecciona una frecuencia semanal, quincenal o mensual. Si ya cargaste las paradas de demostración para el mismo chofer, día y turno, utiliza su ruta o programa la prueba en otra fecha.
+Para probar la operación completa, inicia sesión con la cuenta administradora inicial y crea las cuentas de operación, chofer y cliente, junto con sus datos y catálogos asociados. Registra un contrato vigente con una hora dentro del turno. En **Calendario y rutas**, genera las visitas o programa una manualmente. Selecciona las paradas en orden, asígnalas a ruta, chofer y turno, y activa **Publicar para el chofer**. Puedes confirmar la visita desde la cuenta cliente y luego abrirla desde la cuenta chofer.
 
 ## Integración con programación y contratos
 
-- La API lee `recolecciones.fk_chofer` como referencia a `choferes.pk_chofer`. La parada requiere cliente, ruta, turno, fecha y estado activo (`1`). `orden_parada` es opcional y ordena las paradas de cada ruta. El estado operativo del chofer se guarda en `servicios_chofer`.
+- Las recolecciones guardan sus referencias a clientes, rutas, choferes y turnos como ObjectId. La API serializa esos identificadores como cadenas.
 - La API interpreta `contratos.monto` como cuota **por visita**, suma el excedente nuevo del mes de servicio si hay cuota de kilos y aplica el `iva_porcentaje` configurado. Configura ese campo explícitamente, incluso si corresponde cero. Con cuota de kilos, configura `tarifa_excedente` antes de cerrar visitas que excedan la cuota. Se usa el peso en kg de visitas completadas por este módulo. Una visita fallida solo genera una venta cuando el contrato especifica `cargo_visita_fallida`.
 - La jornada se interpreta en `America/Mexico_City`. El corte descuenta los viáticos del efectivo y considera efectivo el método de pago de catálogo llamado `Efectivo`.
-- El módulo usa `/api/v1/chofer` y el token de `POST /api/auth/login`. El cierre de sesión usa `POST /api/auth/logout`. Los tokens vencen tras ocho horas y se guardan en memoria del proceso. Al iniciar sesión por primera vez con una contraseña legada en Base64, se migra su almacenamiento a scrypt.
-- Fotos y firmas se almacenan en MySQL y se sirven mediante rutas autenticadas. La firma confirma el servicio y su importe. La recepción de dinero queda registrada en los pagos.
+- El módulo usa `/api/v1/chofer` y el token de `POST /api/auth/login`. El cierre de sesión usa `POST /api/auth/logout`. Los tokens vencen tras ocho horas y se guardan como hashes en la colección de sesiones. Las contraseñas se verifican con scrypt.
+- Fotos y firmas se almacenan en MongoDB y se sirven mediante rutas autenticadas. La firma confirma el servicio y su importe. La recepción de dinero queda registrada en los pagos.
 
 ## Operación del servidor
 
 La generación automática es opcional. Configura `GENERACION_USUARIO_ID` con el ID de una cuenta administrativa o de logística activa y `GENERACION_HORIZONTE_DIAS` entre 1 y 91. El backend genera las visitas al arrancar y repite la tarea cada hora. Las visitas se registran una sola vez por contrato y fecha original.
 
-Usa `GET /api/health` para verificar el proceso y `GET /api/ready` para verificar MySQL y la migración de operación. En producción, publica la API detrás de HTTPS, configura monitoreo de ambas rutas y programa respaldos de MySQL con un usuario de mínimo privilegio. Comprueba la restauración en una base separada. La cámara, galería y firma deben validarse en el dispositivo físico usado por el equipo.
+Usa `GET /api/health` para verificar el proceso y `GET /api/ready` para verificar la conectividad con MongoDB. En producción, publica la API detrás de HTTPS, configura monitoreo de ambas rutas y configura los respaldos del clúster de Atlas. Comprueba la restauración en una base separada. La cámara, galería y firma deben validarse en el dispositivo físico usado por el equipo.
 
-El panel de reportes muestra solicitudes, errores del servidor, latencia media y última generación desde el arranque. Para respaldos en Windows, guarda la conexión de respaldo con `mysql_config_editor` bajo el nombre `ecoreco-backup` y ejecuta `backend/scripts/backup.ps1 -Directory RUTA_PRIVADA`. Puedes agendar ese mismo comando en el Programador de tareas. Restringe el acceso a esa carpeta porque el respaldo contiene los datos y evidencias de la operación.
+El panel de reportes muestra solicitudes, errores del servidor, latencia media y última generación desde el arranque.
 
 ## Pruebas
 

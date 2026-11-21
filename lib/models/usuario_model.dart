@@ -1,5 +1,6 @@
+
 class UsuarioModel {
-  final int pkUsuario;
+  final String pkUsuario;
   final int fkRol;
   final String usuario;
   final String nombre;
@@ -17,20 +18,25 @@ class UsuarioModel {
     this.token,
   });
 
-  // Convertir JSON del servidor a Objeto Dart
-  factory UsuarioModel.fromJson(Map<String, dynamic> json, {String? token}) {
+  factory UsuarioModel.fromJson(
+    Map<String, dynamic> json, {
+    String? token,
+  }) {
     return UsuarioModel(
-      pkUsuario: json['pk_usuario'] ?? 0,
-      fkRol: json['fk_rol'] ?? 0,
-      usuario: json['usuario'] ?? '',
-      nombre: json['nombre'] ?? '',
-      correo: json['correo'] ?? '',
-      estado: json['estado'] ?? 1,
+      pkUsuario: '${json['pk_usuario'] ?? ''}',
+      fkRol: int.tryParse(
+        '${json['fk_rol'] ?? 0}',
+      ) ?? 0,
+      usuario: json['usuario']?.toString() ?? '',
+      nombre: json['nombre']?.toString() ?? '',
+      correo: json['correo']?.toString() ?? '',
+      estado: int.tryParse(
+        '${json['estado'] ?? 1}',
+      ) ?? 1,
       token: token,
     );
   }
 
-  // Convertir Objeto Dart a JSON
   Map<String, dynamic> toJson() {
     return {
       'pk_usuario': pkUsuario,

@@ -1,49 +1,113 @@
-const { randomBytes } = require('node:crypto');
-const db = require('../config/db');
 
-const sessions = new Map();
-const duration = 8 * 60 * 60 * 1000;
+const {
+  randomBytes,
+  createHash,
+} = require('node:crypto');
 
-function createSession(userId) {
-  const now = Date.now();
-  for (const [token, session] of sessions) {
-    if (session.expires <= now) sessions.delete(token);
-  }
+const { Session, User } = require('../models');
+
+const DURATION = 8 * 60 * 60 * 1000;
+
+function hashToken(token) {
+  return createHash('sha256')
+    .update(token)
+    .digest('hex');
+}
+
+async function createSession(userId) {
   const token = randomBytes(32).toString('hex');
-  sessions.set(token, { userId, expires: now + duration });
+
+  await Session.create({
+    tokenHash: hashToken(token),
+    userId,
+    expiresAt: new Date(Date.now() + DURATION),
+  });
+
   return token;
 }
 
-function authorize(role) {
+function authorize(requiredRole) {
   return async (req, res, next) => {
-    const token = req.get('authorization')?.match(/^Bearer ([a-f0-9]{64})$/i)?.[1];
-    const session = sessions.get(token);
-    if (!session || session.expires <= Date.now()) {
-      sessions.delete(token);
-      return res.status(401).json({ mensaje: 'Inicia sesión nuevamente.' });
+    const match = req.get('authorization')
+      ?.match(/^Bearer ([a-f0-9]{64})$/i);
+
+    if (!match) {
+      return res.status(401).json({
+        mensaje: 'Inicia sesión nuevamente.',
+      });
     }
+
+    const token = match[1].toLowerCase();
+
     try {
-      const [[user]] = await db.execute(
-        `SELECT u.pk_usuario, u.fk_rol FROM usuarios u
-         JOIN roles r ON r.pk_rol = u.fk_rol AND r.estado = 1
-         WHERE u.pk_usuario = ? AND u.estado = 1`,
-        [session.userId]
-      );
-      if (!user || (role && user.fk_rol !== role)) {
-        return res.status(403).json({ mensaje: 'Acceso denegado.' });
+      const session = await Session.findOne({
+        tokenHash: hashToken(token),
+        expiresAt: { $gt: new Date() },
+      });
+
+      if (!session) {
+        return res.status(401).json({
+          mensaje: 'La sesión expiró. Inicia sesión nuevamente.',
+        });
       }
-      req.user = user;
+
+      const account = await User.findById(session.userId)
+        .populate('rolId');
+
+      if (
+        !account ||
+        !account.activo ||
+        !account.rolId ||
+        !account.rolId.activo
+      ) {
+        await Session.deleteOne({ _id: session._id });
+
+        return res.status(401).json({
+          mensaje: 'La cuenta ya no está disponible.',
+        });
+      }
+
+      const role = Number(account.rolId.codigo);
+
+      if (requiredRole && role !== requiredRole) {
+        return res.status(403).json({
+          mensaje: 'Acceso denegado.',
+        });
+      }
+
+      req.user = {
+        pk_usuario: account._id.toString(),
+        fk_rol: role,
+        usuario: account.usuario,
+        nombre: account.nombre,
+        correo: account.correo || '',
+        estado: 1,
+      };
+
       req.token = token;
-      next();
+      req.sessionId = session._id;
+
+      return next();
     } catch (error) {
-      next(error);
+      return next(error);
     }
   };
 }
 
-function endSession(req, res) {
-  sessions.delete(req.token);
-  res.sendStatus(204);
+async function endSession(req, res, next) {
+  try {
+    await Session.deleteOne({
+      tokenHash: hashToken(req.token),
+    });
+
+    return res.sendStatus(204);
+  } catch (error) {
+    return next(error);
+  }
 }
 
-module.exports = { createSession, authorize, endSession };
+module.exports = {
+  createSession,
+  authorize,
+  endSession,
+};

@@ -73,9 +73,9 @@ class _ChoferHomeState extends State<ChoferHome> {
       builder: (data) {
         final day = data['fecha'] as String;
         final stops = rows(data, 'paradas');
-        final shifts = <int, String>{
+        final shifts = <String, String>{
           for (final stop in stops)
-            stop['fk_turno'] as int: stop['turno'] as String,
+            stop['fk_turno'].toString(): stop['turno'] as String,
         };
         return ListView(
           padding: const EdgeInsets.all(16),
@@ -185,7 +185,7 @@ class _ChoferHomeState extends State<ChoferHome> {
                 MaterialPageRoute(
                   builder: (_) => ChoferParada(
                     api: widget.api,
-                    id: stop['pk_recoleccion'] as int,
+                    id: stop['pk_recoleccion'].toString(),
                   ),
                 ),
               );

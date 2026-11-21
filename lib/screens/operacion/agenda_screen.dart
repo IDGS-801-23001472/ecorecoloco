@@ -27,7 +27,7 @@ class AgendaScreen extends StatefulWidget {
 
 class _AgendaScreenState extends State<AgendaScreen> {
   late Future<Json> _data;
-  final _selected = <int>{};
+  final _selected = <String>{};
   String? _day;
   bool _busy = false;
 
@@ -92,7 +92,7 @@ class _AgendaScreenState extends State<AgendaScreen> {
   }
 
   Future<void> _schedule(Json data) async {
-    final contract = await showDialog<int>(
+    final contract = await showDialog<String>(
       context: context,
       builder: (_) => SimpleDialog(
         title: Text('Programar visita · ${data['fecha']}'),
@@ -104,7 +104,7 @@ class _AgendaScreenState extends State<AgendaScreen> {
             ),
           for (final item in rows(data, 'contratos'))
             SimpleDialogOption(
-              onPressed: () => Navigator.pop(context, item['id'] as int),
+              onPressed: () => Navigator.pop(context, item['id'] as String),
               child: Text('${item['nombre']}'),
             ),
         ],
@@ -182,7 +182,7 @@ class _AgendaScreenState extends State<AgendaScreen> {
   );
 
   Widget _visit(Json visit, bool current) {
-    final id = visit['id'] as int;
+    final id = visit['id'] as String;
     final available =
         current && visit['activo'] == 1 && visit['servicio'] == 'pendiente';
     final assigned = visit['fk_ruta'] != null;
@@ -239,7 +239,7 @@ class _AssignmentDialog extends StatefulWidget {
 }
 
 class _AssignmentDialogState extends State<_AssignmentDialog> {
-  final values = <String, int>{};
+  final values = <String, String>{};
   bool _publish = false;
   static const choices = {
     'rutas': ('fk_ruta', 'Ruta'),
@@ -255,14 +255,14 @@ class _AssignmentDialogState extends State<_AssignmentDialog> {
         mainAxisSize: MainAxisSize.min,
         children: [
           for (final entry in choices.entries)
-            DropdownButtonFormField<int>(
+            DropdownButtonFormField<String>(
               initialValue: values[entry.value.$1],
               decoration: InputDecoration(labelText: entry.value.$2),
               isExpanded: true,
               items: [
                 for (final item in rows(widget.data, entry.key))
                   DropdownMenuItem(
-                    value: item['id'] as int,
+                    value: item['id'] as String,
                     child: Text(
                       '${item['nombre']}',
                       overflow: TextOverflow.ellipsis,
