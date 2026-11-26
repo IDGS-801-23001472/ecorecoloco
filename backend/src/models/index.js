@@ -868,7 +868,7 @@ const manifestSchema = new Schema({
   },
   destino: {
     type: String,
-    required: true,
+    default: null,
   },
   observaciones: {
     type: String,
@@ -933,7 +933,7 @@ const expenseSchema = new Schema({
   rutaId: {
     type: ObjectId,
     ref: 'Route',
-    required: true,
+    default: null,
   },
   usuarioId: {
     type: ObjectId,
@@ -948,8 +948,9 @@ const expenseSchema = new Schema({
   recoleccionId: {
     type: ObjectId,
     ref: 'Collection',
-    required: true,
+    default: null,
   },
+  jornada: String,
   fecha: {
     type: Date,
     required: true,
@@ -1068,13 +1069,14 @@ const cutSchema = new Schema({
     type: Decimal,
     required: true,
   },
+  efectivoCobrado: Decimal,
   efectivoContado: {
     type: Decimal,
-    required: true,
+    default: null,
   },
   diferencia: {
     type: Decimal,
-    required: true,
+    default: null,
   },
   revisorId: {
     type: ObjectId,

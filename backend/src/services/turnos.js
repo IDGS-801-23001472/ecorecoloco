@@ -5,12 +5,8 @@ const activeShifts = {
 };
 
 function shiftHours(shift) {
-  const horaInicio = String(
-    shift?.horaInicio ?? shift?.hora_inicio ?? ''
-  ).slice(0, 5);
-  const horaFin = String(
-    shift?.horaFin ?? shift?.hora_fin ?? ''
-  ).slice(0, 5);
+  const horaInicio = String(shift?.horaInicio ?? shift?.hora_inicio ?? '').slice(0, 5);
+  const horaFin = String(shift?.horaFin ?? shift?.hora_fin ?? '').slice(0, 5);
   const clock = /^([01]\d|2[0-3]):[0-5]\d$/;
 
   return clock.test(horaInicio) && clock.test(horaFin) && horaInicio < horaFin
@@ -20,7 +16,6 @@ function shiftHours(shift) {
 
 async function listShifts(session = null) {
   const rows = await Shift.find(activeShifts).session(session).lean();
-
   return rows.flatMap(row => {
     const hours = shiftHours(row);
     return hours ? [{ ...row, ...hours }] : [];

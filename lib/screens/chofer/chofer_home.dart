@@ -17,7 +17,7 @@ class ChoferHome extends StatefulWidget {
 
 class _ChoferHomeState extends State<ChoferHome> {
   late Future<Json> _data;
-  String? _fecha;
+  String? _cashDay;
 
   @override
   void initState() {
@@ -25,8 +25,7 @@ class _ChoferHomeState extends State<ChoferHome> {
     _data = _load();
   }
 
-  Future<Json> _load() =>
-      widget.api.get('paradas', _fecha == null ? null : {'fecha': _fecha!});
+  Future<Json> _load() => widget.api.get('paradas');
 
   void _refresh() {
     final next = _load();
@@ -35,25 +34,10 @@ class _ChoferHomeState extends State<ChoferHome> {
     });
   }
 
-  Future<void> _pickDate(String day) async {
-    final selected = await showDatePicker(
-      context: context,
-      initialDate: DateTime.parse(day),
-      firstDate: DateTime(2000),
-      lastDate: DateTime(2100),
-    );
-    if (selected != null && mounted) {
-      setState(() {
-        _fecha = isoDay(selected);
-        _data = _load();
-      });
-    }
-  }
-
   @override
   Widget build(BuildContext context) => Scaffold(
     appBar: AppBar(
-      title: const Text('Chofer · Ruta del día'),
+      title: const Text('Chofer · Paradas pendientes'),
       actions: [
         IconButton(
           tooltip: 'Actualizar',
@@ -71,12 +55,15 @@ class _ChoferHomeState extends State<ChoferHome> {
       future: _data,
       retry: _refresh,
       builder: (data) {
-        final day = data['fecha'] as String;
         final stops = rows(data, 'paradas');
-        final shifts = <String, String>{
-          for (final stop in stops)
-            stop['fk_turno'].toString(): stop['turno'] as String,
-        };
+        final cash = data['cajas'] == null ? <Json>[] : rows(data, 'cajas');
+        final cashDays = cash.map((item) => item['fecha'] as String).toSet();
+        final day = cashDays.contains(_cashDay)
+            ? _cashDay
+            : cashDays.isEmpty
+            ? null
+            : cashDays.first;
+        final shifts = cash.where((item) => item['fecha'] == day);
         return ListView(
           padding: const EdgeInsets.all(16),
           children: [
@@ -87,16 +74,11 @@ class _ChoferHomeState extends State<ChoferHome> {
             Wrap(
               spacing: 8,
               children: [
-                OutlinedButton.icon(
-                  onPressed: () => _pickDate(day),
-                  icon: const Icon(Icons.calendar_today),
-                  label: Text(day),
-                ),
                 TextButton.icon(
                   onPressed: () => Navigator.push(
                     context,
                     MaterialPageRoute(
-                      builder: (_) => _History(api: widget.api, day: day),
+                      builder: (_) => _History(api: widget.api),
                     ),
                   ),
                   icon: const Icon(Icons.receipt_long),
@@ -107,7 +89,7 @@ class _ChoferHomeState extends State<ChoferHome> {
                     context,
                     MaterialPageRoute(
                       builder: (_) =>
-                          _History(api: widget.api, day: day, manifests: true),
+                          _History(api: widget.api, manifests: true),
                     ),
                   ),
                   icon: const Icon(Icons.description_outlined),
@@ -118,20 +100,28 @@ class _ChoferHomeState extends State<ChoferHome> {
             if (stops.isEmpty)
               const Padding(
                 padding: EdgeInsets.symmetric(vertical: 32),
-                child: Text('No tienes paradas asignadas para esta fecha.'),
+                child: Text('No tienes paradas pendientes.'),
               ),
             for (var index = 0; index < stops.length; index++)
               _stopTile(stops, index),
             if (shifts.isNotEmpty) ...[
               const SizedBox(height: 16),
               Text(
-                'Caja por turno',
+                'Caja por jornada y turno',
                 style: Theme.of(context).textTheme.titleLarge,
               ),
-              for (final shift in shifts.entries)
+              DropdownButton<String>(
+                value: day,
+                items: [
+                  for (final date in cashDays)
+                    DropdownMenuItem(value: date, child: Text(date)),
+                ],
+                onChanged: (date) => setState(() => _cashDay = date),
+              ),
+              for (final shift in shifts)
                 ListTile(
                   leading: const Icon(Icons.account_balance_wallet_outlined),
-                  title: Text(shift.value),
+                  title: Text(shift['nombre'] as String),
                   subtitle: const Text('Pagos, viáticos y corte'),
                   trailing: const Icon(Icons.chevron_right),
                   onTap: () => Navigator.push(
@@ -139,9 +129,9 @@ class _ChoferHomeState extends State<ChoferHome> {
                     MaterialPageRoute(
                       builder: (_) => ChoferCaja(
                         api: widget.api,
-                        day: day,
-                        shift: shift.key,
-                        name: shift.value,
+                        day: day!,
+                        shift: shift['id'] as String,
+                        name: shift['nombre'] as String,
                       ),
                     ),
                   ),
@@ -175,7 +165,7 @@ class _ChoferHomeState extends State<ChoferHome> {
             leading: const Icon(Icons.location_on_outlined),
             title: Text('${stop['cliente']}'),
             subtitle: Text(
-              '${(stop['fecha'] as String).substring(11, 16)} · '
+              '${stop['fecha'].toString().replaceFirst('T', ' ')} · '
               '${stopStatus(stop['estado'] as String)}\n${stop['direccion'] ?? ''}',
             ),
             trailing: const Icon(Icons.chevron_right),
@@ -199,14 +189,9 @@ class _ChoferHomeState extends State<ChoferHome> {
 }
 
 class _History extends StatefulWidget {
-  const _History({
-    required this.api,
-    required this.day,
-    this.manifests = false,
-  });
+  const _History({required this.api, this.manifests = false});
 
   final ChoferApi api;
-  final String day;
   final bool manifests;
 
   @override
@@ -217,11 +202,10 @@ class _HistoryState extends State<_History> {
   final _filter = TextEditingController();
   late Future<Json> _data;
 
-  Future<Json> _load() =>
-      widget.api.get(widget.manifests ? 'manifiestos' : 'ventas', {
-        'fecha': widget.day,
-        (widget.manifests ? 'folio' : 'cliente'): _filter.text.trim(),
-      });
+  Future<Json> _load() => widget.api.get(
+    widget.manifests ? 'manifiestos' : 'ventas',
+    {(widget.manifests ? 'folio' : 'cliente'): _filter.text.trim()},
+  );
 
   @override
   void initState() {
@@ -245,9 +229,7 @@ class _HistoryState extends State<_History> {
   @override
   Widget build(BuildContext context) => Scaffold(
     appBar: AppBar(
-      title: Text(
-        '${widget.manifests ? 'Manifiestos' : 'Ventas'} · ${widget.day}',
-      ),
+      title: Text(widget.manifests ? 'Manifiestos' : 'Historial de ventas'),
     ),
     body: Column(
       children: [
@@ -288,19 +270,25 @@ class _HistoryState extends State<_History> {
                       subtitle: Text(
                         widget.manifests
                             ? '${item['fecha']}'
-                            : 'Total ${mxn(item['total'])} · Saldo ${mxn(item['saldo'])}',
+                            : '${item['fecha']} · Total ${mxn(item['total'])} · Saldo ${mxn(item['saldo'])}',
                       ),
-                      onTap: widget.manifests
-                          ? () => Navigator.push(
-                              context,
-                              MaterialPageRoute(
-                                builder: (_) => ChoferManifiesto(
-                                  api: widget.api,
-                                  path: 'paradas/${item['fk_recoleccion']}',
+                      onTap: item['fk_recoleccion'] == null
+                          ? null
+                          : () async {
+                              final id = item['fk_recoleccion'].toString();
+                              await Navigator.push(
+                                context,
+                                MaterialPageRoute(
+                                  builder: (_) => widget.manifests
+                                      ? ChoferManifiesto(
+                                          api: widget.api,
+                                          path: 'paradas/$id',
+                                        )
+                                      : ChoferParada(api: widget.api, id: id),
                                 ),
-                              ),
-                            )
-                          : null,
+                              );
+                              if (mounted) _refresh();
+                            },
                     ),
                 ],
               );

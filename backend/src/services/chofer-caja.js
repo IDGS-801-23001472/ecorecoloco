@@ -131,10 +131,8 @@ function dayRange(day) {
 // ========================================
 
 async function expense(user, body) {
-  const stopId = objectId(
-    body?.fk_recoleccion,
-    'Parada'
-  );
+  const stopId = body?.fk_recoleccion == null ? null :
+    objectId(body.fk_recoleccion, 'Parada');
 
   const concept = text(
     body?.concepto,
@@ -151,59 +149,35 @@ async function expense(user, body) {
   const userId = objectId(user, 'Usuario');
 
   return transaction(user, async session => {
-    const stop = await getStop(
-      session,
-      user,
-      stopId.toString()
-    );
+    const stop = stopId ? await getStop(session, user, String(stopId)) : null;
+    const shiftId = stop?.turnoId._id ?? objectId(body?.fk_turno, 'Turno');
+    const day = date(body?.fecha ?? today());
 
-    // Evitar duplicados por reintentos.
-    const prior = await Expense.findOne({
-      usuarioId: userId,
-      clave: operation,
-    }).session(session);
-
+    const prior = await Expense.findOne({ usuarioId: userId, clave: operation })
+      .session(session);
     if (prior) {
-      if (
-        asId(prior.recoleccionId) !== asId(stop._id) ||
-        asId(prior.rutaId) !== asId(stop.rutaId) ||
-        asId(prior.turnoId) !== asId(stop.turnoId) ||
-        cents(prior.importe) !== value ||
-        prior.concepto !== concept
-      ) {
-        throw new RequestError(
-          'La clave de operación ya se usó con otros datos.',
-          409
-        );
+      if (asId(prior.recoleccionId) !== asId(stopId) ||
+          asId(prior.turnoId) !== asId(shiftId) ||
+          (prior.jornada ?? day) !== day ||
+          cents(prior.importe) !== value || prior.concepto !== concept) {
+        throw new RequestError('La clave de operación ya se usó con otros datos.', 409);
       }
-
       return { pk_viatico: asId(prior) };
     }
 
-    const day = today();
-
-    if (stop.fechaClave !== day) {
-      throw new RequestError(
-        'El gasto requiere una parada de hoy.',
-        409
-      );
-    }
-
-    await requireOpen(
-      session,
-      user,
-      asId(stop.turnoId),
-      day
-    );
+    if (day > today()) throw new RequestError('La jornada todavía no inicia.');
+    const data = await shiftData(session, user, shiftId, day);
+    await requireOpen(session, user, asId(shiftId), day);
 
     const timestamp = new Date();
 
     const [saved] = await Expense.create([{
-      choferId: stop.choferId._id,
-      rutaId: stop.rutaId._id,
+      choferId: data.driverId,
+      rutaId: stop?.rutaId._id ?? null,
       usuarioId: userId,
-      turnoId: stop.turnoId._id,
-      recoleccionId: stop._id,
+      turnoId: shiftId,
+      recoleccionId: stopId,
+      jornada: day,
 
       fecha: timestamp,
       importe: decimal128(value),
@@ -258,7 +232,8 @@ async function shiftData(session, user, shiftId, day) {
   const hasStops = await Collection.exists({
     choferId: driver._id,
     turnoId: shiftId,
-    fechaClave: day,
+    fechaClave: day === today() ? { $lte: day } : day,
+    $or: [{ publicada: true }, { 'servicio.estado': { $in: ['en_curso', 'completada', 'fallida'] } }],
   }).session(session);
 
   if (!hasStops) {
@@ -287,7 +262,7 @@ async function shiftData(session, user, shiftId, day) {
   const expenses = await Expense.find({
     usuarioId: userId,
     turnoId: shiftId,
-    fecha: range,
+    $or: [{ jornada: day }, { jornada: { $exists: false }, fecha: range }],
     activo: true,
   })
     .sort({ _id: 1 })
@@ -337,6 +312,7 @@ async function shiftData(session, user, shiftId, day) {
   });
 
   return {
+    driverId: driver._id,
     payments,
     paymentRows,
     expenseRows,
@@ -366,12 +342,16 @@ function formatCut(cut) {
     monto_inicial: amount(cents(cut.fondoInicial)),
     total_ventas: amount(cents(cut.totalCobros)),
     total_gastos: amount(cents(cut.totalViaticos)),
+    efectivo: cut.efectivoCobrado?.toString() ?? null,
+    otros_metodos: cut.efectivoCobrado == null ? null :
+      amount(cents(cut.totalCobros) - cents(cut.efectivoCobrado)),
+    observaciones: cut.observaciones ?? null,
 
     efectivo_esperado:
       cut.efectivoEsperado?.toString() ?? '0.00',
 
     efectivo_contado:
-      amount(cents(cut.efectivoContado)),
+      cut.efectivoContado?.toString() ?? null,
 
     diferencia:
       cut.diferencia?.toString() ?? '0.00',
@@ -439,6 +419,8 @@ async function summary(user, shift, day) {
       total_pagos: amount(data.paymentTotal),
       efectivo: amount(data.cash),
       gastos: amount(data.costs),
+      otros_metodos: amount(data.paymentTotal - data.cash),
+      efectivo_a_entregar: amount(data.cash - data.costs),
     };
   });
 }
@@ -451,18 +433,6 @@ async function close(user, shift, day, body) {
   const shiftId = objectId(shift, 'Turno');
 
   date(day);
-
-  const initial = decimal(
-    body?.monto_inicial,
-    'Fondo inicial',
-    true
-  );
-
-  const counted = decimal(
-    body?.efectivo_contado,
-    'Efectivo contado',
-    true
-  );
 
   const notes = text(
     body?.observaciones,
@@ -485,19 +455,7 @@ async function close(user, shift, day, body) {
       day
     );
 
-    if (previous) {
-      if (
-        cents(previous.fondoInicial) !== initial ||
-        cents(previous.efectivoContado) !== counted
-      ) {
-        throw new RequestError(
-          'El turno ya fue cerrado con otros importes.',
-          409
-        );
-      }
-
-      return formatCut(previous);
-    }
+    if (previous) return formatCut(previous);
 
     const data = await shiftData(
       session,
@@ -506,9 +464,7 @@ async function close(user, shift, day, body) {
       day
     );
 
-    // Fondo inicial + efectivo recibido - viáticos.
-    const expected =
-      initial + data.cash - data.costs;
+    const expected = data.cash - data.costs;
 
     const timestamp = new Date();
 
@@ -545,15 +501,15 @@ async function close(user, shift, day, body) {
       fechaInicio: dayRange(day).$gte,
       fechaFin: timestamp,
 
-      fondoInicial: decimal128(initial),
+      fondoInicial: decimal128(0n),
       totalCobros: decimal128(data.paymentTotal),
       totalViaticos: decimal128(data.costs),
 
-      efectivoFinal: decimal128(counted),
+      efectivoFinal: decimal128(expected),
+      efectivoCobrado: decimal128(data.cash),
 
       efectivoEsperado: decimal128(expected),
-      efectivoContado: decimal128(counted),
-      diferencia: decimal128(counted - expected),
+
 
       observaciones: notes,
       movimientos: movements,
@@ -583,11 +539,7 @@ async function close(user, shift, day, body) {
 // ========================================
 
 async function listCuts(day) {
-  date(day);
-
-  const cuts = await Cut.find({
-    jornada: day,
-  })
+  const cuts = await Cut.find(day ? { jornada: day } : {})
     .populate('usuarioId', 'nombre')
     .populate('turnoId', 'nombre')
     .lean();
@@ -597,7 +549,7 @@ async function listCuts(day) {
     const aReviewed = a.revisorId ? 1 : 0;
     const bReviewed = b.revisorId ? 1 : 0;
 
-    return aReviewed - bReviewed ||
+    return aReviewed - bReviewed || b.jornada.localeCompare(a.jornada) ||
       (a.usuarioId?.nombre || '').localeCompare(
         b.usuarioId?.nombre || '',
         'es'
@@ -609,7 +561,8 @@ async function listCuts(day) {
   });
 
   return {
-    fecha: day,
+    fecha: day ?? null,
+    hoy: today(),
     cortes: cuts.map(formatCut),
   };
 }

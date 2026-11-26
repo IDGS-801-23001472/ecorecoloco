@@ -335,6 +335,7 @@ function mapVisit(item) {
     id: item._id.toString(),
     folio: item.folio,
     cliente: item.clienteId?.nombre || 'Cliente no disponible',
+    contrato: item.contratoId?.folio ?? null,
     fecha: formatWallClock(item.fecha),
 
     activo: item.activo === false ? 0 : 1,
@@ -365,23 +366,21 @@ function mapVisit(item) {
 // ==========================================
 
 async function agenda(day) {
-  const items = await models.Collection.find({
-    fechaClave: day,
-  })
+  const items = await models.Collection.find(day ? { fechaClave: day } : {})
     .populate({ path: 'clienteId', select: 'nombre' })
+    .populate({ path: 'contratoId', select: 'folio' })
     .populate({ path: 'rutaId', select: 'nombre' })
     .populate({ path: 'choferId', select: 'nombre' })
     .populate({ path: 'turnoId', select: 'nombre' })
-    .sort({
-      rutaId: 1,
-      orden: 1,
-      fecha: 1,
-      _id: 1,
-    })
+    .sort({ fecha: -1, _id: -1 })
     .lean();
 
+  const open = item => item.activo !== false &&
+    ['pendiente', 'en_curso'].includes(item.servicio?.estado || 'pendiente');
+  items.sort((a, b) => Number(open(b)) - Number(open(a)));
+
   return {
-    fecha: day,
+    fecha: day ?? null,
     hoy: today(),
     items: items.map(mapVisit),
     ...(await catalogOptions()),
@@ -435,9 +434,9 @@ async function assign(userId, body) {
         })
         .session(session),
 
-        models.Shift.findOne({
-          _id: shiftId,
-          ...activeShifts,
+      models.Shift.findOne({
+        _id: shiftId,
+        ...activeShifts,
       }).session(session).lean(),
 
       models.Route.findOne({
@@ -688,19 +687,15 @@ async function customerVisits(userValue) {
   })
     .populate(populate)
     .sort({ fechaClave: 1, fecha: 1, _id: -1 })
-    .limit(100)
     .lean();
 
-  const past = upcoming.length < 100
-    ? await models.Collection.find({
-        clienteId: client._id,
-        fechaClave: { $lt: currentDay },
-      })
-        .populate(populate)
-        .sort({ fechaClave: -1, fecha: -1, _id: -1 })
-        .limit(100 - upcoming.length)
-        .lean()
-    : [];
+  const past = await models.Collection.find({
+    clienteId: client._id,
+    fechaClave: { $lt: currentDay },
+  })
+    .populate(populate)
+    .sort({ fechaClave: -1, fecha: -1, _id: -1 })
+    .lean();
 
   return {
     fecha: currentDay,
@@ -821,7 +816,6 @@ async function customerAction(userValue, visitValue, body) {
       const availableShift = shifts.some(shift =>
         shift.horaInicio <= visitTime && visitTime < shift.horaFin
       );
-
       if (!availableShift || !availableDriver) {
         throw new RequestError(
           'No hay un turno y chofer habilitados para esa fecha y hora.',

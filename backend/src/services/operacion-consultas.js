@@ -230,7 +230,6 @@ async function customerAccount(userId) {
       clienteId: client._id,
     })
       .sort({ _id: -1 })
-      .limit(100)
       .lean(),
 
     Sale.find({
@@ -238,7 +237,6 @@ async function customerAccount(userId) {
       activo: true,
     })
       .sort({ _id: -1 })
-      .limit(100)
       .lean(),
 
     Manifest.find({
@@ -246,7 +244,6 @@ async function customerAccount(userId) {
       activo: true,
     })
       .sort({ _id: -1 })
-      .limit(100)
       .select('folio fechaEmision')
       .lean(),
   ]);
@@ -266,6 +263,7 @@ async function customerAccount(userId) {
   // Ventas y saldos pendientes
   result.ventas = sales.map(sale => ({
     folio: sale.folio,
+    fecha: localDate(sale.fecha),
     total: asMoney(sale.total),
 
     saldo: money(

@@ -104,7 +104,7 @@ const catalogs = {
         'cuentaId'
       ),
       name,
-      field('telefono', 'Teléfono', 'text', false, 10),
+      field('telefono', 'Teléfono', 'phone', false, 10),
       field('correo', 'Correo', 'email', false),
       ref(
         'fk_actividad_comercial',
@@ -167,13 +167,7 @@ const catalogs = {
         30,
         'frecuencia'
       ),
-      ref(
-        'fk_turno',
-        'Turno de recolección',
-        'turnos_contrato',
-        false,
-        'turnoId'
-      ),
+      ref('fk_turno', 'Turno de recolección', 'turnos_contrato', false, 'turnoId'),
       field(
         'monto',
         'Cuota por visita',
@@ -387,7 +381,8 @@ function definition(resource, role) {
 function menu(role) {
   return {
     items: Object.entries(catalogs)
-      .filter(([, config]) => role === 1 || config.commercial)
+      .filter(([key, config]) => !['roles', 'banners'].includes(key) &&
+        (role === 1 || config.commercial))
       .map(([key, config]) => ({
         key,
         label: config.label,
@@ -409,11 +404,6 @@ function objectId(value, label = 'Identificador') {
 
   return new mongoose.Types.ObjectId(value);
 }
-
-
-// ==========================================
-// OPCIONES PARA SELECTORES
-// ==========================================
 
 function neighborhoodLabel(row) {
   const postalCode = row.codigoPostal ?? row.codigo_postal;
@@ -454,6 +444,10 @@ async function neighborhoodOptions() {
 async function catalogRole(code) {
   return models.Role.findOne({ codigo: code, ...activeFilter }).select('_id');
 }
+
+// ==========================================
+// OPCIONES PARA SELECTORES
+// ==========================================
 
 async function options(_conn, source) {
   if (source === 'roles') {
@@ -498,6 +492,7 @@ async function options(_conn, source) {
   if (!config) return [];
 
   const sortField = config.title || 'nombre';
+
   const rows = await config.model.find(activeFilter)
     .sort({ [sortField]: 1 })
     .limit(500)
@@ -578,6 +573,12 @@ function normalizeInput(item, value) {
 
       return text(value, item.label, item.max).toLowerCase();
 
+    case 'phone':
+      if (typeof value !== 'string' || !/^\d{10}$/.test(value)) {
+        throw new RequestError('El teléfono debe tener 10 dígitos.');
+      }
+      return value;
+
     case 'password':
       return text(value, item.label, item.max, item.required);
 
@@ -643,6 +644,10 @@ async function buildValues(resource, config, body, existingId) {
         }
 
         continue;
+      }
+
+      if (raw !== body.confirmar_pass) {
+        throw new RequestError('Las contraseñas no coinciden.');
       }
 
       if (raw.length < 8) {
@@ -760,12 +765,14 @@ async function list(resource, role, page = 1) {
   const config = definition(resource, role);
   const offset = (page - 1) * 50;
 
-    const query = config.model.find()
+  const query = config.model.find()
     .sort({ activo: -1, _id: -1 })
     .skip(offset)
     .limit(51);
 
-  for (const item of config.fields.filter(field => field.source === 'roles')) {
+  for (const item of config.fields.filter(
+    field => field.source === 'roles'
+  )) {
     query.populate({
       path: item.db,
       select: 'codigo nombre folio titulo usuario',
@@ -792,9 +799,13 @@ async function list(resource, role, page = 1) {
             ? value.codigo
             : value.toString();
       } else if (item.type === 'decimal') {
-        result[item.key] = value == null ? null : value.toString();
+        result[item.key] = value == null
+          ? null
+          : value.toString();
       } else if (item.type === 'date') {
-        result[item.key] = value == null ? null : String(value).slice(0, 10);
+        result[item.key] = value == null
+          ? null
+          : String(value).slice(0, 10);
       } else {
         result[item.key] = value == null ? null : value;
       }
@@ -811,25 +822,24 @@ async function list(resource, role, page = 1) {
     selectors[item.source] = await options(null, item.source);
   }
 
+  const fieldMetadata = ({ key, label, type, required, max, source }) => ({
+    key, label, type, required, max, ...(source ? { source } : {}),
+  });
+  const clientFields = catalogs.clientes.fields.filter(item =>
+    !['fk_usuario', 'nombre', 'correo'].includes(item.key)
+  );
+  if (resource === 'usuarios') {
+    for (const item of clientFields.filter(item => item.source)) {
+      selectors[item.source] = await options(null, item.source);
+    }
+  }
+
   return {
     items,
     more: documents.length > 50,
 
-    fields: config.fields.map(({
-      key,
-      label,
-      type,
-      required,
-      max,
-      source,
-    }) => ({
-      key,
-      label,
-      type,
-      required,
-      max,
-      ...(source ? { source } : {}),
-    })),
+    fields: config.fields.map(fieldMetadata),
+    ...(resource === 'usuarios' ? { campos_cliente: clientFields.map(fieldMetadata) } : {}),
 
     selectors,
     title: config.title || 'nombre',
@@ -843,23 +853,42 @@ async function list(resource, role, page = 1) {
 // CREAR Y EDITAR REGISTROS
 // ==========================================
 
+function requireWritable(resource) {
+  if (['roles', 'banners'].includes(resource)) {
+    throw new RequestError('Este catálogo es de solo lectura.', 403);
+  }
+}
+
+async function createClientAndAccount(user, client, account, returnAccount) {
+  await validateUnique('usuarios', account, null);
+  const session = await mongoose.startSession();
+  try {
+    return await session.withTransaction(async () => {
+      const [createdUser] = await models.User.create([account], { session });
+      const [createdClient] = await models.Client.create([
+        { ...client, cuentaId: createdUser._id },
+      ], { session });
+      await models.Audit.create([
+        { usuarioId: user.pk_usuario, recurso: 'clientes',
+          recursoId: String(createdClient._id), accion: 'guardar' },
+        { usuarioId: user.pk_usuario, recurso: 'usuarios',
+          recursoId: String(createdUser._id), accion: 'guardar' },
+      ], { session, ordered: true });
+      return { id: String(returnAccount ? createdUser._id : createdClient._id) };
+    });
+  } finally {
+    await session.endSession();
+  }
+}
+
 async function save(user, resource, resourceId, body) {
+  requireWritable(resource);
+  body ??= {};
   const config = definition(resource, user.fk_rol);
 
   const existingId = resourceId
     ? objectId(resourceId)
     : null;
-
-  // Los cuatro roles son parte de la estructura del sistema.
-  // Para agregar nuevos perfiles también debemos configurar
-  // sus permisos y navegación en Flutter.
-
-  if (resource === 'roles' && !existingId) {
-    throw new RequestError(
-      'EcoReco utiliza cuatro roles definidos por el sistema. No se pueden crear roles adicionales desde este catálogo.',
-      409
-    );
-  }
 
   const values = await buildValues(
     resource,
@@ -886,7 +915,7 @@ async function save(user, resource, resourceId, body) {
   }
 
   // Validaciones específicas de contratos.
-    if (resource === 'contratos') {
+  if (resource === 'contratos') {
     const current = existingId
       ? await models.Contract.findById(existingId)
         .select('clienteId fechaInicio turnoId horaServicio').lean()
@@ -910,11 +939,7 @@ async function save(user, resource, resourceId, body) {
         ...activeShifts,
       }).lean();
       const hours = shiftHours(shift);
-
-      if (!hours) {
-        throw new RequestError('El turno ya no está disponible.', 409);
-      }
-
+      if (!hours) throw new RequestError('El turno ya no está disponible.', 409);
       values.horaServicio = hours.horaInicio;
     } else {
       values.horaServicio = current?.horaServicio ?? null;
@@ -923,7 +948,10 @@ async function save(user, resource, resourceId, body) {
     if (
       values.fechaFin < values.fechaInicio ||
       Number(values.ivaPorcentaje.toString()) > 100 ||
-      (values.kilosMensuales != null && values.tarifaExcedente == null)
+      (
+        values.kilosMensuales != null &&
+        values.tarifaExcedente == null
+      )
     ) {
       throw new RequestError(
         'Revisa la vigencia, el porcentaje de IVA y la tarifa de excedente.'
@@ -956,6 +984,22 @@ async function save(user, resource, resourceId, body) {
   let saved;
 
   try {
+    if (!existingId && resource === 'clientes' && !values.cuentaId) {
+      const account = await buildValues('usuarios', catalogs.usuarios, {
+        fk_rol: 4, usuario: body.usuario_cliente, pass: body.pass_cliente,
+        confirmar_pass: body.confirmar_pass_cliente,
+        nombre: values.nombre, correo: values.correo,
+      }, null);
+      return await createClientAndAccount(user, values, account, false);
+    }
+
+    if (!existingId && resource === 'usuarios' && Number(body.fk_rol) === 4) {
+      const client = await buildValues('clientes', catalogs.clientes, {
+        ...body, fk_usuario: null,
+      }, null);
+      return await createClientAndAccount(user, client, values, true);
+    }
+
     if (existingId) {
       saved = await config.model.findByIdAndUpdate(
         existingId,
@@ -1010,6 +1054,7 @@ async function save(user, resource, resourceId, body) {
 // ==========================================
 
 async function setActive(user, resource, resourceId, active) {
+  requireWritable(resource);
   const config = definition(resource, user.fk_rol);
   const id = objectId(resourceId);
 

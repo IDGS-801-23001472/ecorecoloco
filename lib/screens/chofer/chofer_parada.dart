@@ -124,7 +124,8 @@ class _ChoferParadaState extends State<ChoferParada> {
               ),
             ),
             const SizedBox(height: 16),
-            if (status == 'pendiente' && stop['es_hoy'] == true)
+            if (status == 'pendiente' &&
+                (stop['fecha_operable'] ?? stop['es_hoy']) == true)
               FilledButton.icon(
                 onPressed: _busy
                     ? null
@@ -215,9 +216,8 @@ class _ChoferParadaState extends State<ChoferParada> {
   Widget _sale(Json stop, Json sale) {
     final isCurrent = sale['fk_recoleccion'] == widget.id;
     final canPay =
-        stop['es_hoy'] == true &&
+        (stop['fecha_operable'] ?? stop['es_hoy']) == true &&
         (double.tryParse('${sale['saldo']}') ?? 0) > 0;
-
     return Card(
       child: Padding(
         padding: const EdgeInsets.all(12),
@@ -588,7 +588,7 @@ class _ManifestState extends State<ChoferManifiesto> {
           Text('Cliente · ${manifest['cliente']}'),
           Text('Chofer · ${manifest['chofer']}'),
           Text('Origen · ${manifest['origen']}'),
-          Text('Destino · ${manifest['destino']}'),
+          Text('Destino · ${manifest['destino'] ?? 'Por registrar'}'),
           if (manifest['fecha_entrega'] != null)
             Text('Entregado · ${manifest['fecha_entrega']}')
           else
@@ -597,7 +597,8 @@ class _ManifestState extends State<ChoferManifiesto> {
               child: OutlinedButton(
                 onPressed: _busy
                     ? null
-                    : () => _deliver('${manifest['destino']}'),
+                    : () =>
+                          _deliver('${manifest['destino'] ?? 'Por registrar'}'),
                 child: const Text('Registrar entrega'),
               ),
             ),

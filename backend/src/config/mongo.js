@@ -3,7 +3,7 @@ const mongoose = require('mongoose');
 
 let connecting;
 
-async function connectMongo() {
+async function connectMongo({ autoIndex = process.env.NODE_ENV !== 'production' } = {}) {
   if (mongoose.connection.readyState === 1) {
     return mongoose.connection;
   }
@@ -21,7 +21,7 @@ async function connectMongo() {
   connecting = mongoose.connect(uri, {
     dbName: process.env.MONGODB_DB || 'ecoreco',
     serverSelectionTimeoutMS: 15000,
-    autoIndex: process.env.NODE_ENV !== 'production',
+    autoIndex,
   })
     .then(({ connection }) => {
       console.log(`MongoDB conectado: ${connection.name}`);

@@ -89,7 +89,7 @@ router.post('/catalogos/:resource/:id/estado', commercial, respond(req =>
 
 router.get('/agenda', commercial, respond(req =>
   agenda.agenda(
-    date(req.query.fecha ?? agenda.today())
+    req.query.fecha == null ? null : date(req.query.fecha)
   )
 ));
 

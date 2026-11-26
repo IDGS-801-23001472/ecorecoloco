@@ -41,22 +41,13 @@ class _ChoferCajaState extends State<ChoferCaja> {
   }
 
   Future<void> _expense() async {
-    try {
-      final data = await widget.api.get('paradas', _query);
-      if (!mounted) return;
-      final stops = rows(
-        data,
-        'paradas',
-      ).where((stop) => stop['fk_turno'] == widget.shift);
-      final changed = await Navigator.of(context).push<bool>(
-        MaterialPageRoute(
-          builder: (_) => _ExpenseForm(api: widget.api, stops: stops.toList()),
-        ),
-      );
-      if (changed == true && mounted) _refresh();
-    } on Exception catch (error) {
-      if (mounted) showMessage(context, error);
-    }
+    final changed = await Navigator.of(context).push<bool>(
+      MaterialPageRoute(
+        builder: (_) =>
+            _ExpenseForm(api: widget.api, shift: widget.shift, day: widget.day),
+      ),
+    );
+    if (changed == true && mounted) _refresh();
   }
 
   Future<void> _close(Json data) async {
@@ -125,9 +116,14 @@ class _ChoferCajaState extends State<ChoferCaja> {
 }
 
 class _ExpenseForm extends StatefulWidget {
-  const _ExpenseForm({required this.api, required this.stops});
+  const _ExpenseForm({
+    required this.api,
+    required this.shift,
+    required this.day,
+  });
   final ChoferApi api;
-  final List<Json> stops;
+  final String shift;
+  final String day;
 
   @override
   State<_ExpenseForm> createState() => _ExpenseFormState();
@@ -138,7 +134,6 @@ class _ExpenseFormState extends State<_ExpenseForm> {
   final _concept = TextEditingController();
   final _amount = TextEditingController();
   final _operation = operationKey();
-  String? _stop;
   bool _busy = false;
 
   @override
@@ -153,7 +148,8 @@ class _ExpenseFormState extends State<_ExpenseForm> {
     setState(() => _busy = true);
     try {
       await widget.api.post('viaticos', {
-        'fk_recoleccion': _stop,
+        'fk_turno': widget.shift,
+        'fecha': widget.day,
         'concepto': _concept.text.trim(),
         'importe': normalizedDecimal(_amount.text),
         'clave': _operation,
@@ -174,27 +170,6 @@ class _ExpenseFormState extends State<_ExpenseForm> {
       child: ListView(
         padding: const EdgeInsets.all(16),
         children: [
-          DropdownButtonFormField<String>(
-            initialValue: _stop,
-            isExpanded: true,
-            decoration: const InputDecoration(
-              labelText: 'Parada de la ruta',
-            ),
-            items: [
-              for (final stop in widget.stops)
-                DropdownMenuItem<String>(
-                  value: stop['pk_recoleccion'].toString(),
-                  child: Text(
-                    '${stop['ruta']} · ${stop['cliente']}',
-                  ),
-                ),
-            ],
-            onChanged: _busy
-                ? null
-                : (value) => setState(() => _stop = value),
-            validator: (value) =>
-                value == null ? 'Selecciona una parada' : null,
-          ),
           TextFormField(
             controller: _concept,
             maxLength: 120,
@@ -233,15 +208,11 @@ class _CloseForm extends StatefulWidget {
 
 class _CloseFormState extends State<_CloseForm> {
   final _form = GlobalKey<FormState>();
-  final _initial = TextEditingController(text: '0.00');
-  final _counted = TextEditingController();
   final _notes = TextEditingController();
   bool _busy = false;
 
   @override
   void dispose() {
-    _initial.dispose();
-    _counted.dispose();
     _notes.dispose();
     super.dispose();
   }
@@ -251,8 +222,6 @@ class _CloseFormState extends State<_CloseForm> {
     setState(() => _busy = true);
     try {
       await widget.api.post(widget.path, {
-        'monto_inicial': normalizedDecimal(_initial.text),
-        'efectivo_contado': normalizedDecimal(_counted.text),
         'observaciones': _notes.text.trim(),
       }, widget.query);
       if (mounted) Navigator.pop(context, true);
@@ -276,15 +245,9 @@ class _CloseFormState extends State<_CloseForm> {
           const Text(
             'Al cerrar el turno se bloquean nuevos cobros y viáticos de esta jornada para el turno seleccionado.',
           ),
-          DecimalField(
-            controller: _initial,
-            label: 'Fondo inicial',
-            allowZero: true,
-          ),
-          DecimalField(
-            controller: _counted,
-            label: 'Efectivo contado',
-            allowZero: true,
+          Text('Otros métodos ${mxn(widget.summary['otros_metodos'])}'),
+          Text(
+            'Efectivo a entregar ${mxn(widget.summary['efectivo_a_entregar'])}',
           ),
           TextFormField(
             controller: _notes,
@@ -310,12 +273,16 @@ class _CutDetails extends StatelessWidget {
     crossAxisAlignment: CrossAxisAlignment.start,
     children: [
       Text('Corte ${cut['fk_corte']} · ${cut['turno']}'),
-      Text('Fondo inicial ${mxn(cut['monto_inicial'])}'),
+      Text('Jornada ${cut['jornada']}'),
+      if (cut['efectivo'] != null)
+        Text('Cobrado en efectivo ${mxn(cut['efectivo'])}'),
+      if (cut['otros_metodos'] != null)
+        Text('Otros métodos ${mxn(cut['otros_metodos'])}'),
       Text('Total cobrado ${mxn(cut['total_ventas'])}'),
       Text('Total de viáticos ${mxn(cut['total_gastos'])}'),
-      Text('Efectivo esperado ${mxn(cut['efectivo_esperado'])}'),
-      Text('Efectivo contado ${mxn(cut['efectivo_contado'])}'),
-      Text('Diferencia ${mxn(cut['diferencia'])}'),
+      Text('Efectivo a entregar ${mxn(cut['efectivo_esperado'])}'),
+      if (cut['observaciones'] != null) Text('${cut['observaciones']}'),
+
       Text(
         cut['fk_revisor'] == null
             ? 'Pendiente de revisión'
@@ -335,6 +302,7 @@ class RevisionCortes extends StatefulWidget {
 
 class _RevisionCortesState extends State<RevisionCortes> {
   String? _day;
+  bool _pendingOnly = false;
   late Future<Json> _data;
   bool _busy = false;
 
@@ -407,20 +375,37 @@ class _RevisionCortesState extends State<RevisionCortes> {
       future: _data,
       retry: _refresh,
       builder: (data) {
-        final day = data['fecha'] as String;
-        final cuts = rows(data, 'cortes');
+        final day = data['fecha'] as String?;
+        final cuts = rows(
+          data,
+          'cortes',
+        ).where((cut) => !_pendingOnly || cut['fk_revisor'] == null);
         return ListView(
           padding: const EdgeInsets.all(16),
           children: [
             Align(
               alignment: Alignment.centerLeft,
               child: OutlinedButton.icon(
-                onPressed: () => _pick(day),
+                onPressed: () => _pick(day ?? data['hoy'] as String),
                 icon: const Icon(Icons.calendar_today),
-                label: Text(day),
+                label: Text(day ?? 'Filtrar por fecha'),
               ),
             ),
-            if (cuts.isEmpty) const Text('No hay cortes para esta fecha.'),
+            if (day != null)
+              TextButton(
+                onPressed: () {
+                  _day = null;
+                  _refresh();
+                },
+                child: const Text('Todas las fechas'),
+              ),
+            SwitchListTile(
+              title: const Text('Solo pendientes de revisión'),
+              value: _pendingOnly,
+              onChanged: (value) => setState(() => _pendingOnly = value),
+            ),
+            if (cuts.isEmpty) const Text('No hay cortes.'),
+
             for (final cut in cuts)
               Card(
                 child: Padding(

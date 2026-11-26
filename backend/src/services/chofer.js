@@ -26,7 +26,6 @@ const {
 } = require('./chofer-domain');
 
 const Oid = mongoose.Types.ObjectId;
-
 const activeCatalogEntry = {
   $or: [{ activo: true }, { activo: { $exists: false }, estado: 1 }],
 };
@@ -335,34 +334,47 @@ function stopSort(a, b) {
 async function list(user, day) {
   const driver = await driverFor(user);
 
-  const stops = await Collection.find({
-    choferId: driver._id,
+  const filters = day ? {
     fechaClave: day,
-
     $or: [
-      {
-        activo: true,
-        publicada: true,
-      },
-      {
-        'servicio.estado': {
-          $in: [
-            'en_curso',
-            'completada',
-            'fallida',
-          ],
-        },
-      },
+      { activo: true, publicada: true },
+      { 'servicio.estado': { $in: ['en_curso', 'completada', 'fallida'] } },
     ],
-  })
+  } : {
+    activo: true,
+    publicada: true,
+    $or: [
+      { 'servicio.estado': { $in: ['pendiente', 'en_curso'] } },
+      { 'servicio.estado': { $exists: false } },
+    ],
+  };
+
+  const stops = await Collection.find({ choferId: driver._id, ...filters })
     .populate('clienteId', 'nombre direccion telefono')
     .populate('rutaId', 'nombre')
     .populate('turnoId', 'nombre horaInicio')
     .lean();
 
+  const assignments = day ? [] : await Collection.find({
+    choferId: driver._id,
+    turnoId: { $ne: null },
+    fechaClave: { $lte: today() },
+    $or: [{ publicada: true }, { 'servicio.estado': { $in: ['en_curso', 'completada', 'fallida'] } }],
+  }).select('fechaClave turnoId').populate('turnoId', 'nombre').lean();
+  const cashShifts = new Map();
+  for (const item of assignments) {
+    if (!item.turnoId) continue;
+    const id = ref(item.turnoId);
+    for (const date of [item.fechaClave, today()]) {
+      cashShifts.set(`${date}:${id}`, { id, fecha: date, nombre: item.turnoId.nombre });
+    }
+  }
+
   return {
-    fecha: day,
-    paradas: stops.sort(stopSort).map(stopRow),
+    fecha: day ?? today(),
+    paradas: stops.sort((a, b) => (a.fechaClave ?? '').localeCompare(b.fechaClave ?? '') ||
+      stopSort(a, b)).map(stopRow),
+    cajas: [...cashShifts.values()].sort((a, b) => b.fecha.localeCompare(a.fecha)),
   };
 }
 
@@ -444,8 +456,7 @@ async function detail(user, stopId) {
       activo: true,
     })
       .sort({ fecha: 1, _id: 1 })
-      .limit(500)
-      .lean(),
+        .lean(),
   ]);
 
   const paid = await totalPaid(
@@ -489,6 +500,7 @@ async function detail(user, stopId) {
     ...stopRow(stop),
 
     es_hoy: stop.fechaClave === today(),
+    fecha_operable: stop.fechaClave <= today(),
 
     residuos: (stop.residuos || [])
       .filter(x => x.activo !== false)
@@ -561,9 +573,9 @@ async function start(user, stopId) {
       return { estado: state };
     }
 
-    if (stop.fechaClave !== today()) {
+    if (stop.fechaClave > today()) {
       throw new RequestError(
-        'Solo puedes iniciar paradas de la jornada actual.',
+        'Solo puedes iniciar paradas de hoy o de fechas anteriores.',
         409
       );
     }
@@ -720,7 +732,11 @@ async function serviceData(stop, input, session) {
     (sum, collection) =>
       sum + (collection.residuos ?? [])
         .filter(x => x.activo !== false)
-        .reduce((weight, item) => weight + cents(item.peso), 0n),
+        .reduce(
+          (weight, item) =>
+            weight + cents(item.peso),
+          0n
+        ),
     0n
   );
 
@@ -730,21 +746,20 @@ async function serviceData(stop, input, session) {
   );
 
   const quote = calculate({
-    monto: contract.cuotaPorVisita == null
-      ? null
-      : dec(contract.cuotaPorVisita),
+    monto: contract.cuotaPorVisita == null ? null : dec(contract.cuotaPorVisita),
 
-    iva_porcentaje: contract.ivaPorcentaje == null
-      ? null
-      : dec(contract.ivaPorcentaje),
+    iva_porcentaje:
+      contract.ivaPorcentaje == null ? null : dec(contract.ivaPorcentaje),
 
-    kilos_mensuales: contract.kilosMensuales == null
-      ? null
-      : dec(contract.kilosMensuales),
+    kilos_mensuales:
+      contract.kilosMensuales == null
+        ? null
+        : dec(contract.kilosMensuales),
 
-    tarifa_excedente: contract.tarifaExcedente == null
-      ? null
-      : dec(contract.tarifaExcedente),
+    tarifa_excedente:
+      contract.tarifaExcedente == null
+        ? null
+        : dec(contract.tarifaExcedente),
   }, priorKg, currentKg);
 
   return {
@@ -926,17 +941,8 @@ async function complete(user, stopId, body) {
     false
   );
 
-  const origin = text(
-    body?.origen,
-    'Origen',
-    255
-  );
-
-  const destination = text(
-    body?.destino,
-    'Destino',
-    255
-  );
+  const origin = text(body?.origen, 'Origen', 255, false);
+  const destination = text(body?.destino, 'Destino', 255, false);
 
   const signature = image(
     body?.firma,
@@ -1030,7 +1036,7 @@ async function complete(user, stopId, body) {
         folio: `M-${ref(stop)}`,
         fechaEmision: new Date(),
 
-        origen: origin,
+        origen: origin ?? (stop.clienteId.direccion || stop.clienteId.nombre),
         destino: destination,
         observaciones: notes,
 
@@ -1187,9 +1193,9 @@ async function pay(user, stopId, body) {
 
       const day = today();
 
-      if (stop.fechaClave !== day) {
+      if (stop.fechaClave > day) {
         throw new RequestError(
-          'El cobro requiere una parada de hoy.',
+          'El cobro requiere una parada de hoy o de fechas anteriores.',
           409
         );
       }
@@ -1307,8 +1313,13 @@ async function manifest(user, stopId) {
     cliente: doc.clienteNombre,
     chofer: doc.choferNombre,
 
-    fecha_emision: localTime(doc.fechaEmision),
-    fecha_entrega: localTime(doc.entrega?.fecha),
+    fecha_emision: localTime(
+      doc.fechaEmision
+    ),
+
+    fecha_entrega: localTime(
+      doc.entrega?.fecha
+    ),
 
     residuos: (doc.residuos || []).map(item => ({
       descripcion: item.descripcion,
@@ -1388,7 +1399,7 @@ async function manifests(user, day, folio) {
 
   if (folio) {
     query.folio = folio;
-  } else {
+  } else if (day) {
     query.fechaEmision = dayRange(day);
   }
 
@@ -1519,14 +1530,13 @@ async function history(user, day, client = '') {
   const sales = await Sale.find({
     usuarioId: userId,
     activo: true,
-    fecha: dayRange(day),
+    ...(day ? { fecha: dayRange(day) } : {}),
   })
     .populate('clienteId', 'nombre')
     .sort({
       fecha: -1,
       _id: -1,
     })
-    .limit(500)
     .lean();
 
   const chosen = sales.filter(sale =>
@@ -1544,6 +1554,7 @@ async function history(user, day, client = '') {
   return {
     ventas: chosen.map(sale => ({
       folio: sale.folio,
+      fk_recoleccion: ref(sale.recoleccionId),
 
       cliente:
         sale.clienteId?.nombre || '',

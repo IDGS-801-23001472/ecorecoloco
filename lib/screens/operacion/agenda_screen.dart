@@ -29,6 +29,8 @@ class _AgendaScreenState extends State<AgendaScreen> {
   late Future<Json> _data;
   final _selected = <String>{};
   String? _day;
+  String? _selectionDay;
+  String? _status;
   bool _busy = false;
 
   @override
@@ -92,10 +94,17 @@ class _AgendaScreenState extends State<AgendaScreen> {
   }
 
   Future<void> _schedule(Json data) async {
+    final today = data['hoy'] as String;
+    final day = await pickOperationDay(
+      context,
+      _day != null && _day!.compareTo(today) >= 0 ? _day! : today,
+      minimum: today,
+    );
+    if (day == null || !mounted) return;
     final contract = await showDialog<String>(
       context: context,
       builder: (_) => SimpleDialog(
-        title: Text('Programar visita · ${data['fecha']}'),
+        title: Text('Programar visita · $day'),
         children: [
           if (rows(data, 'contratos').isEmpty)
             const Padding(
@@ -112,7 +121,7 @@ class _AgendaScreenState extends State<AgendaScreen> {
     );
     if (contract == null || !mounted) return;
     await _mutate('agenda/programar', {
-      'fecha': data['fecha'],
+      'fecha': day,
       'fk_contrato': contract,
     }, (_) => 'Visita programada.');
   }
@@ -125,7 +134,7 @@ class _AgendaScreenState extends State<AgendaScreen> {
     if (selection == null || !mounted) return;
     await _mutate(
       'agenda/asignar',
-      {...selection, 'fecha': data['fecha'], 'paradas': _selected.toList()},
+      {...selection, 'fecha': _selectionDay, 'paradas': _selected.toList()},
       (data) => selection['publicar'] == true
           ? 'Paradas publicadas: ${data['asignadas']}'
           : 'Paradas en borrador: ${data['asignadas']}',
@@ -134,13 +143,26 @@ class _AgendaScreenState extends State<AgendaScreen> {
 
   @override
   Widget build(BuildContext context) => Scaffold(
-    appBar: AppBar(title: const Text('Calendario y rutas')),
+    appBar: AppBar(
+      title: const Text('Calendario y rutas'),
+      actions: [
+        IconButton(
+          onPressed: _busy ? null : _refresh,
+          tooltip: 'Actualizar',
+          icon: const Icon(Icons.refresh),
+        ),
+      ],
+    ),
     body: AsyncContent(
       future: _data,
       retry: _refresh,
       builder: (data) {
-        final day = data['fecha'] as String;
+        final day = data['fecha'] as String?;
         final today = data['hoy'] as String;
+        final visits = rows(data, 'items').where((visit) {
+          final status = visit['activo'] != 1 ? 'cancelada' : visit['servicio'];
+          return _status == null || status == _status;
+        }).toList();
         return ListView(
           padding: const EdgeInsets.all(16),
           children: [
@@ -148,18 +170,27 @@ class _AgendaScreenState extends State<AgendaScreen> {
               spacing: 8,
               children: [
                 OutlinedButton.icon(
-                  onPressed: _busy ? null : () => _pick(day),
+                  onPressed: _busy ? null : () => _pick(day ?? today),
                   icon: const Icon(Icons.calendar_today),
-                  label: Text(day),
+                  label: Text(day ?? 'Filtrar por fecha'),
                 ),
+                if (day != null)
+                  TextButton(
+                    onPressed: _busy
+                        ? null
+                        : () {
+                            _day = null;
+                            _selected.clear();
+                            _refresh();
+                          },
+                    child: const Text('Todas las fechas'),
+                  ),
                 OutlinedButton(
                   onPressed: _busy ? null : () => _generate(today),
                   child: const Text('Generar visitas'),
                 ),
                 OutlinedButton(
-                  onPressed: _busy || day.compareTo(today) < 0
-                      ? null
-                      : () => _schedule(data),
+                  onPressed: _busy ? null : () => _schedule(data),
                   child: const Text('Programar una visita'),
                 ),
                 FilledButton(
@@ -170,21 +201,49 @@ class _AgendaScreenState extends State<AgendaScreen> {
                 ),
               ],
             ),
+            DropdownButton<String>(
+              hint: const Text('Todos los estados'),
+              value: _status,
+              items: [
+                const DropdownMenuItem(
+                  value: null,
+                  child: Text('Todos los estados'),
+                ),
+                for (final status in [
+                  'pendiente',
+                  'en_curso',
+                  'completada',
+                  'fallida',
+                  'cancelada',
+                ])
+                  DropdownMenuItem(
+                    value: status,
+                    child: Text(
+                      status == 'cancelada' ? 'Cancelada' : stopStatus(status),
+                    ),
+                  ),
+              ],
+              onChanged: (status) => setState(() {
+                _status = status;
+                _selected.clear();
+              }),
+            ),
             const Text('Selecciona las paradas en el orden de visita.'),
-            if (rows(data, 'items').isEmpty)
-              const Text('Sin visitas programadas para esta fecha.'),
-            for (final visit in rows(data, 'items'))
-              _visit(visit, day.compareTo(today) >= 0),
+            if (visits.isEmpty) const Text('Sin visitas programadas.'),
+            for (final visit in visits) _visit(visit, today),
           ],
         );
       },
     ),
   );
 
-  Widget _visit(Json visit, bool current) {
+  Widget _visit(Json visit, String today) {
     final id = visit['id'] as String;
+    final date = visit['fecha'].toString().split('T').first;
     final available =
-        current && visit['activo'] == 1 && visit['servicio'] == 'pendiente';
+        date.compareTo(today) >= 0 &&
+        visit['activo'] == 1 &&
+        visit['servicio'] == 'pendiente';
     final assigned = visit['fk_ruta'] != null;
     final position = _selected.toList().indexOf(id);
     return Card(
@@ -196,6 +255,8 @@ class _AgendaScreenState extends State<AgendaScreen> {
                     ? null
                     : (value) => setState(() {
                         if (value == true) {
+                          if (_selectionDay != date) _selected.clear();
+                          _selectionDay = date;
                           _selected.add(id);
                         } else {
                           _selected.remove(id);
@@ -207,8 +268,10 @@ class _AgendaScreenState extends State<AgendaScreen> {
           '${position >= 0 ? '${position + 1}. ' : ''}${visit['cliente']}',
         ),
         subtitle: Text(
-          '${visit['folio']} · ${visit['respuesta_cliente']}\n'
-          '${visit['fecha'].toString().substring(11, 16)} · '
+          '${visit['contrato'] ?? visit['folio']} · ${visit['folio']}\n'
+          '${visit['activo'] != 1 ? 'Cancelada' : stopStatus(visit['servicio'] as String)}'
+          ' · Cliente: ${visit['respuesta_cliente']}\n'
+          '${visit['fecha'].toString().replaceFirst('T', ' ')} · '
           '${assigned ? "${visit['ruta']} / ${visit['chofer']}" : "Sin asignar"}'
           '${assigned && visit['publicada'] == 0 ? ' · Borrador' : ''}',
         ),

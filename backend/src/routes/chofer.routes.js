@@ -32,6 +32,8 @@ const day = req => date(
   req.query.fecha ?? service.today()
 );
 
+const optionalDay = req => req.query.fecha == null ? null : date(req.query.fecha);
+
 const stop = req => req.params.id;
 
 // ========================================
@@ -42,7 +44,7 @@ router.get(
   '/revision/cortes',
   authorize(1),
   withUser((user, req) =>
-    caja.listCuts(day(req))
+    caja.listCuts(optionalDay(req))
   )
 );
 
@@ -79,7 +81,7 @@ router.get('/catalogos', withUser(() =>
 router.get('/paradas', withUser((user, req) =>
   service.list(
     user,
-    day(req)
+    optionalDay(req)
   )
 ));
 
@@ -185,7 +187,7 @@ router.post(
 router.get('/manifiestos', withUser((user, req) =>
   service.manifests(
     user,
-    day(req),
+    optionalDay(req),
     text(
       req.query.folio,
       'Folio',
@@ -220,7 +222,7 @@ router.get(
 router.get('/ventas', withUser((user, req) =>
   service.history(
     user,
-    day(req),
+    optionalDay(req),
     text(
       req.query.cliente,
       'Cliente',

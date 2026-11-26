@@ -30,9 +30,6 @@ class _ChoferServicioState extends State<ChoferServicio> {
   final _form = GlobalKey<FormState>();
   final _signature = GlobalKey<_SignatureState>();
   final _items = [_WasteInput()];
-  late final _origin = TextEditingController(text: widget.address);
-  final _destination = TextEditingController();
-  final _supplies = TextEditingController();
   late final _notes = TextEditingController(text: widget.initialNotes);
   late Future<Json> _catalog;
   Json? _quote;
@@ -52,9 +49,6 @@ class _ChoferServicioState extends State<ChoferServicio> {
     for (final item in _items) {
       item.dispose();
     }
-    _origin.dispose();
-    _destination.dispose();
-    _supplies.dispose();
     _notes.dispose();
     super.dispose();
   }
@@ -92,9 +86,6 @@ class _ChoferServicioState extends State<ChoferServicio> {
       await widget.api.post('${widget.path}/completar', {
         'residuos': _quotedItems,
         'total_confirmado': _quote!['total'],
-        'origen': _origin.text.trim(),
-        'destino': _destination.text.trim(),
-        'insumos': _supplies.text.trim(),
         'observaciones': _notes.text.trim(),
         'firma': signature,
         if (_photo != null) 'foto': base64Encode(_photo!),
@@ -149,15 +140,6 @@ class _ChoferServicioState extends State<ChoferServicio> {
               icon: const Icon(Icons.add),
               label: const Text('Agregar tipo de residuo'),
             ),
-            _requiredField(_origin, 'Origen'),
-            _requiredField(_destination, 'Destino'),
-            TextFormField(
-              controller: _supplies,
-              maxLength: 255,
-              decoration: const InputDecoration(
-                labelText: 'Insumos utilizados',
-              ),
-            ),
             TextFormField(
               controller: _notes,
               maxLength: 255,
@@ -202,9 +184,11 @@ class _ChoferServicioState extends State<ChoferServicio> {
                 if (value == null) {
                   return 'Selecciona un residuo';
                 }
+
                 if (_items.where((other) => other.waste == value).length > 1) {
                   return 'Agrupa los residuos del mismo tipo';
                 }
+
                 return null;
               },
             ),
@@ -233,54 +217,58 @@ class _ChoferServicioState extends State<ChoferServicio> {
     );
   }
 
-  Widget _requiredField(TextEditingController controller, String label) =>
-      TextFormField(
-        controller: controller,
-        maxLength: 255,
-        decoration: InputDecoration(labelText: label),
-        validator: (value) =>
-            (value ?? '').trim().isEmpty ? 'Campo obligatorio' : null,
-      );
-
   Widget _confirm() {
     final quote = _quote!;
     return AbsorbPointer(
       absorbing: _busy,
-      child: ListView(
-        padding: const EdgeInsets.all(16),
+      child: Column(
         children: [
-          Text(
-            'Importes para el cliente',
-            style: Theme.of(context).textTheme.titleLarge,
-          ),
-          for (final line in rows(quote, 'conceptos'))
-            Text('${line['concepto']} · ${mxn(line['subtotal'])}'),
-          Text('Subtotal ${mxn(quote['subtotal'])}'),
-          Text('IVA ${mxn(quote['iva'])}'),
-          Text(
-            'Total ${mxn(quote['total'])}',
-            style: Theme.of(context).textTheme.titleMedium,
-          ),
-          const SizedBox(height: 12),
-          const Text(
-            'La firma reconoce el servicio y los importes informados. El pago se registra por separado.',
-          ),
-          const SizedBox(height: 8),
-          _Signature(key: _signature),
-          PhotoInput(
-            photo: _photo,
-            enabled: !_busy,
-            onChanged: (photo) => setState(() => _photo = photo),
-          ),
-          FilledButton(
-            onPressed: _busy ? null : _finish,
-            child: Text(
-              _busy ? 'Guardando…' : 'Finalizar y emitir comprobantes',
+          Expanded(
+            child: ListView(
+              padding: const EdgeInsets.all(16),
+              children: [
+                Text(
+                  'Importes para el cliente',
+                  style: Theme.of(context).textTheme.titleLarge,
+                ),
+                for (final line in rows(quote, 'conceptos'))
+                  Text('${line['concepto']} · ${mxn(line['subtotal'])}'),
+                Text('Subtotal ${mxn(quote['subtotal'])}'),
+                Text('IVA ${mxn(quote['iva'])}'),
+                Text(
+                  'Total ${mxn(quote['total'])}',
+                  style: Theme.of(context).textTheme.titleMedium,
+                ),
+                const SizedBox(height: 12),
+                const Text(
+                  'La firma reconoce el servicio y los importes informados. El pago se registra por separado.',
+                ),
+                const SizedBox(height: 8),
+
+                PhotoInput(
+                  photo: _photo,
+                  enabled: !_busy,
+                  onChanged: (photo) => setState(() => _photo = photo),
+                ),
+                FilledButton(
+                  onPressed: _busy ? null : _finish,
+                  child: Text(
+                    _busy ? 'Guardando…' : 'Finalizar y emitir comprobantes',
+                  ),
+                ),
+                TextButton(
+                  onPressed: _busy ? null : () => setState(() => _quote = null),
+                  child: const Text('Volver a la captura'),
+                ),
+              ],
             ),
           ),
-          TextButton(
-            onPressed: _busy ? null : () => setState(() => _quote = null),
-            child: const Text('Volver a la captura'),
+          SafeArea(
+            top: false,
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 16),
+              child: _Signature(key: _signature),
+            ),
           ),
         ],
       ),
@@ -318,6 +306,7 @@ class _Signature extends StatefulWidget {
 class _SignatureState extends State<_Signature> {
   final _capture = GlobalKey();
   final _strokes = <List<Offset>>[];
+  int? _pointer;
 
   bool get hasSignature => _strokes.any((stroke) => stroke.length > 1);
 
@@ -344,12 +333,24 @@ class _SignatureState extends State<_Signature> {
         decoration: BoxDecoration(
           border: Border.all(color: Theme.of(context).colorScheme.outline),
         ),
-        child: GestureDetector(
+        child: Listener(
           behavior: HitTestBehavior.opaque,
-          onPanStart: (event) =>
-              setState(() => _strokes.add([event.localPosition])),
-          onPanUpdate: (event) =>
-              setState(() => _strokes.last.add(event.localPosition)),
+          onPointerDown: (event) {
+            if (_pointer != null) return;
+            _pointer = event.pointer;
+            setState(() => _strokes.add([event.localPosition]));
+          },
+          onPointerMove: (event) {
+            if (_pointer == event.pointer && _strokes.isNotEmpty) {
+              setState(() => _strokes.last.add(event.localPosition));
+            }
+          },
+          onPointerUp: (event) {
+            if (_pointer == event.pointer) _pointer = null;
+          },
+          onPointerCancel: (event) {
+            if (_pointer == event.pointer) _pointer = null;
+          },
           child: RepaintBoundary(
             key: _capture,
             child: ColoredBox(

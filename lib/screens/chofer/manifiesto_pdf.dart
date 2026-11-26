@@ -37,7 +37,6 @@ class _ManifiestoPdfButtonState extends State<ManifiestoPdfButton> {
         title: 'Manifiesto $folio',
         author: 'EcoReco',
       );
-
       document.addPage(
         pw.MultiPage(
           pageFormat: PdfPageFormat.a4,
@@ -87,11 +86,10 @@ class _ManifiestoPdfButtonState extends State<ManifiestoPdfButton> {
           ],
         ),
       );
-
-      final safeFolio = folio.replaceAll(RegExp(r'[^A-Za-z0-9_-]'), '_');
       await Printing.sharePdf(
         bytes: await document.save(),
-        filename: 'manifiesto-$safeFolio.pdf',
+        filename:
+            'manifiesto-${folio.replaceAll(RegExp(r"[^A-Za-z0-9_-]"), "_")}.pdf',
       );
     } on Exception catch (error) {
       if (mounted) showMessage(context, error);

@@ -1,4 +1,7 @@
 import 'package:flutter/material.dart';
+import 'package:pdf/pdf.dart';
+import 'package:pdf/widgets.dart' as pw;
+import 'package:printing/printing.dart';
 
 import '../../services/chofer_api.dart';
 import '../chofer/chofer_widgets.dart';
@@ -120,6 +123,13 @@ class _ClienteHomeState extends State<ClienteHome> {
 
   Widget _visitList(Json data) {
     final today = data['fecha'] as String;
+    final visits = rows(data, 'items');
+    final pending = visits.where(
+      (visit) =>
+          visit['activo'] == 1 &&
+          ['pendiente', 'en_curso'].contains(visit['servicio']),
+    );
+    final history = visits.where((visit) => !pending.contains(visit));
     return ListView(
       padding: const EdgeInsets.all(16),
       children: [
@@ -127,9 +137,10 @@ class _ClienteHomeState extends State<ClienteHome> {
           'Mis recolecciones',
           style: Theme.of(context).textTheme.headlineSmall,
         ),
-        if (rows(data, 'items').isEmpty)
-          const Text('Todavía no tienes recolecciones.'),
-        for (final visit in rows(data, 'items')) _visitCard(visit, today),
+        if (pending.isEmpty) const Text('No tienes recolecciones pendientes.'),
+        for (final visit in pending) _visitCard(visit, today),
+        if (history.isNotEmpty) _heading('Historial de visitas'),
+        for (final visit in history) _visitCard(visit, today),
       ],
     );
   }
@@ -206,38 +217,102 @@ class _ClienteHomeState extends State<ClienteHome> {
           title: Text('${client['nombre']}'),
           subtitle: Text('${client['direccion'] ?? ''}'),
         ),
-      _heading('Contratos'),
-      for (final item in rows(data, 'contratos'))
-        ListTile(
-          title: Text('${item['folio']}'),
-          subtitle: Text(
-            '${item['inicio']} a ${item['fin']} · ${item['frecuencia']}',
-          ),
-        ),
-      _heading('Estado de cuenta'),
-      for (final item in rows(data, 'ventas'))
-        ListTile(
-          title: Text('${item['folio']}'),
-          subtitle: Text(
-            'Total ${mxn(item['total'])} · Saldo ${mxn(item['saldo'])}',
-          ),
-        ),
-      _heading('Manifiestos'),
-      for (final item in rows(data, 'manifiestos'))
-        ListTile(
-          title: Text('${item['folio']}'),
-          subtitle: Text('${item['fecha']}'),
-          trailing: const Icon(Icons.chevron_right),
-          onTap: () => Navigator.push(
-            context,
-            MaterialPageRoute(
-              builder: (_) =>
-                  _CustomerManifest(api: widget.api, id: item['id'].toString()),
-            ),
-          ),
-        ),
+      _accountLink('Contratos', 'contratos', data),
+      _accountLink('Estado de cuenta', 'ventas', data),
+      _accountLink('Manifiestos', 'manifiestos', data),
     ],
   );
+
+  String _documentSummary(String key, Json item) => switch (key) {
+    'contratos' =>
+      '${item['inicio']} a ${item['fin']} · ${item['frecuencia']}'
+          ' · Cuota ${mxn(item['monto'])} · ${item['estado'] == 1 ? 'Activo' : 'Inactivo'}',
+    'ventas' =>
+      '${item['fecha'] ?? ''} · Total ${mxn(item['total'])}'
+          ' · Saldo ${mxn(item['saldo'])}',
+    _ => '${item['fecha']}',
+  };
+
+  Widget _accountLink(String title, String key, Json data) {
+    final items = rows(data, key);
+    return ListTile(
+      title: Text(title),
+      trailing: const Icon(Icons.chevron_right),
+      onTap: () => Navigator.push(
+        context,
+        MaterialPageRoute<void>(
+          builder: (context) => Scaffold(
+            appBar: AppBar(
+              title: Text(title),
+              actions: [
+                if (key != 'manifiestos' && items.isNotEmpty)
+                  IconButton(
+                    tooltip: 'Compartir PDF',
+                    icon: const Icon(Icons.picture_as_pdf_outlined),
+                    onPressed: () async {
+                      try {
+                        final pdf = pw.Document(
+                          title: title,
+                          author: 'EcoReco',
+                        );
+                        pdf.addPage(
+                          pw.MultiPage(
+                            pageFormat: PdfPageFormat.a4,
+                            maxPages: items.length + 1,
+                            build: (_) => [
+                              pw.Header(level: 0, text: 'EcoReco · $title'),
+                              for (final item in items)
+                                pw.Padding(
+                                  padding: const pw.EdgeInsets.only(bottom: 10),
+                                  child: pw.Text(
+                                    '${item['folio']} · ${_documentSummary(key, item)}',
+                                  ),
+                                ),
+                            ],
+                          ),
+                        );
+                        await Printing.sharePdf(
+                          bytes: await pdf.save(),
+                          filename: '$key.pdf',
+                        );
+                      } on Exception catch (error) {
+                        if (context.mounted) showMessage(context, error);
+                      }
+                    },
+                  ),
+              ],
+            ),
+            body: items.isEmpty
+                ? const Center(child: Text('No hay registros disponibles.'))
+                : ListView.builder(
+                    itemCount: items.length,
+                    itemBuilder: (context, index) {
+                      final item = items[index];
+                      return ListTile(
+                        title: Text('${item['folio']}'),
+                        subtitle: Text(_documentSummary(key, item)),
+                        trailing: key == 'manifiestos'
+                            ? const Icon(Icons.chevron_right)
+                            : null,
+                        onTap: key != 'manifiestos'
+                            ? null
+                            : () => Navigator.push(
+                                context,
+                                MaterialPageRoute<void>(
+                                  builder: (_) => _CustomerManifest(
+                                    api: widget.api,
+                                    id: item['id'].toString(),
+                                  ),
+                                ),
+                              ),
+                      );
+                    },
+                  ),
+          ),
+        ),
+      ),
+    );
+  }
 
   Widget _heading(String title) => Padding(
     padding: const EdgeInsets.only(top: 14),
@@ -246,17 +321,13 @@ class _ClienteHomeState extends State<ClienteHome> {
 }
 
 class _CustomerManifest extends StatefulWidget {
-  const _CustomerManifest({
-    required this.api,
-    required this.id,
-  });
+  const _CustomerManifest({required this.api, required this.id});
 
   final ChoferApi api;
   final String id;
 
   @override
-  State<_CustomerManifest> createState() =>
-      _CustomerManifestState();
+  State<_CustomerManifest> createState() => _CustomerManifestState();
 }
 
 class _CustomerManifestState extends State<_CustomerManifest> {

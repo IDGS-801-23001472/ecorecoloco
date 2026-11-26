@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 import '../../services/chofer_api.dart';
 import '../chofer/chofer_widgets.dart';
@@ -175,6 +176,7 @@ class _CatalogoFormState extends State<_CatalogoForm> {
   final _form = GlobalKey<FormState>();
   final _values = <String, Object?>{};
   bool _busy = false;
+  Object? _selectedRole;
 
   @override
   void initState() {
@@ -188,6 +190,12 @@ class _CatalogoFormState extends State<_CatalogoForm> {
         (field['type'] == 'password' && widget.item == null);
     if (required && (value == null || value.toString().trim().isEmpty)) {
       return 'Campo obligatorio';
+    }
+    if (field['type'] == 'phone' &&
+        value is String &&
+        value.isNotEmpty &&
+        !RegExp(r'^\d{10}$').hasMatch(value)) {
+      return 'Ingresa 10 dígitos';
     }
     return null;
   }
@@ -217,7 +225,6 @@ class _CatalogoFormState extends State<_CatalogoForm> {
         field['required'] != true &&
         (!isContractShift || (widget.item != null && value == null));
     const unassigned = '';
-
     final options = field['type'] == 'ref'
         ? rows(widget.data['selectors'] as Json, field['source'] as String)
         : [
@@ -228,7 +235,6 @@ class _CatalogoFormState extends State<_CatalogoForm> {
         .where((entry) => entry['asignada'] != true || entry['id'] == value)
         .toList();
     final currentIsAvailable = available.any((entry) => entry['id'] == value);
-
     return DropdownButtonFormField<Object>(
       initialValue: currentIsAvailable
           ? value
@@ -253,7 +259,9 @@ class _CatalogoFormState extends State<_CatalogoForm> {
             child: Text('${entry['nombre']}', overflow: TextOverflow.ellipsis),
           ),
       ],
-      onChanged: (_) {},
+      onChanged: (value) {
+        if (key == 'fk_rol') setState(() => _selectedRole = value);
+      },
       validator: (selection) {
         if (isContractShift && !optional && selection == null) {
           return 'Selecciona un turno de recolección';
@@ -337,14 +345,12 @@ class _CatalogoFormState extends State<_CatalogoForm> {
     final value = _values[key];
     final label = field['label'] as String;
     final decoration = InputDecoration(labelText: label);
-
     if (type == 'ref' || type == 'frequency') {
       return _select(field, decoration, value);
     }
     if (type == 'date' && (key == 'fecha_inicio' || key == 'fecha_fin')) {
       return _contractDate(field, decoration);
     }
-
     final initial = value?.toString() ?? '';
     return TextFormField(
       initialValue: type == 'date' && initial.length > 10
@@ -358,7 +364,14 @@ class _CatalogoFormState extends State<_CatalogoForm> {
           _ => null,
         },
       ),
+      inputFormatters: type == 'phone'
+          ? [
+              FilteringTextInputFormatter.digitsOnly,
+              LengthLimitingTextInputFormatter(10),
+            ]
+          : null,
       keyboardType: switch (type) {
+        'phone' => TextInputType.phone,
         'decimal' => const TextInputType.numberWithOptions(decimal: true),
         'email' => TextInputType.emailAddress,
         'date' || 'time' => TextInputType.datetime,
@@ -370,6 +383,29 @@ class _CatalogoFormState extends State<_CatalogoForm> {
           ? normalizedDecimal(value ?? '')
           : value?.trim(),
     );
+  }
+
+  bool get _newClient =>
+      widget.item == null && widget.path.endsWith('/clientes');
+  bool get _newClientUser =>
+      widget.item == null &&
+      _selectedRole == 4 &&
+      widget.path.endsWith('/usuarios');
+
+  Iterable<Json> _fields() sync* {
+    for (final field in rows(widget.data, 'fields')) {
+      if (_newClient && field['key'] == 'fk_usuario') continue;
+      yield field;
+      if (field['key'] == 'pass') {
+        yield {
+          'key': 'confirmar_pass',
+          'label': 'Confirmar contraseña',
+          'type': 'password',
+          'required': widget.item == null,
+        };
+      }
+    }
+    if (_newClientUser) yield* rows(widget.data, 'campos_cliente');
   }
 
   @override
@@ -390,11 +426,42 @@ class _CatalogoFormState extends State<_CatalogoForm> {
                 '${widget.data['label']}',
                 style: Theme.of(context).textTheme.titleLarge,
               ),
-              for (final field in rows(widget.data, 'fields'))
+              for (final field in _fields())
                 Padding(
+                  key: ValueKey(field['key']),
                   padding: const EdgeInsets.only(bottom: 12),
                   child: _input(field),
                 ),
+              if (_newClient) ...[
+                Text(
+                  'Acceso del cliente',
+                  style: Theme.of(context).textTheme.titleMedium,
+                ),
+                for (final field in const <Json>[
+                  {
+                    'key': 'usuario_cliente',
+                    'label': 'Usuario',
+                    'type': 'text',
+                    'required': true,
+                  },
+                  {
+                    'key': 'pass_cliente',
+                    'label': 'Contraseña',
+                    'type': 'password',
+                    'required': true,
+                  },
+                  {
+                    'key': 'confirmar_pass_cliente',
+                    'label': 'Confirmar contraseña',
+                    'type': 'password',
+                    'required': true,
+                  },
+                ])
+                  Padding(
+                    padding: const EdgeInsets.only(bottom: 12),
+                    child: _input(field),
+                  ),
+              ],
               FilledButton(
                 onPressed: _busy ? null : _save,
                 child: Text(_busy ? 'Guardando…' : 'Guardar'),
