@@ -14,12 +14,27 @@ El perfil `cobrador` (rol 3) consulta sus rutas por jornada, abre la ubicación 
 
 Los pagos pueden cubrir todo el saldo, una parte o dejar el adeudo abierto. Un adeudo se abona sobre su venta original desde una parada del mismo cliente asignada al chofer para la jornada actual. El corte por turno consolida pagos y viáticos. Administración (rol 1) puede consultar y revisar los cortes.
 
-## Puesta en marcha
+## Ejecutar la app en Android
+
+Instala Flutter con Dart compatible con `^3.13.7` y prepara el SDK de Android. El proyecto usa AGP 9.3.1 y Gradle 9.5.0. Ejecuta `flutter doctor -v` para revisar el SDK y Java. Si Flutter solicita los permisos para enlaces simbólicos en Windows, activa el Modo de desarrollador.
+
+Conecta el teléfono con la depuración USB habilitada y acepta la autorización en el dispositivo. Desde la raíz del repositorio, ejecuta:
+
+```cmd
+flutter devices
+flutter run
+```
+
+La app usa por defecto la API alojada en Render. Para usar una API local, sigue los pasos de la siguiente sección.
+
+Para generar un APK de release, ejecuta `flutter build apk --release`. El archivo se guarda en `build/app/outputs/flutter-apk/app-release.apk`. La configuración actual usa una clave de depuración para firmarlo.
+
+## Ejecutar el backend local
 
 1. Copia `backend/.env.example` a `backend/.env`. Configura `MONGODB_URI` con la conexión de Atlas, `MONGODB_DB` (por defecto `ecoreco`) y las variables `ADMIN_*` de la cuenta inicial. Conserva las credenciales en ese archivo local.
 2. Desde `backend`, ejecuta `npm ci`, `npm run db:init` y `npm start`. La inicialización crea las colecciones, índices, roles, turnos, métodos de pago y la cuenta administradora.
 3. Comprueba `GET /api/health` y `GET /api/ready` en el puerto configurado (3000 por defecto).
-4. Desde la raíz, ejecuta `flutter pub get` y `flutter devices`. Para un teléfono Android conectado por USB, usa el identificador del dispositivo en ambos comandos. Si CMD no reconoce `adb`, usa la ruta completa de `platform-tools\adb.exe` dentro de tu Android SDK.
+4. Abre otra terminal en la raíz del repositorio y ejecuta `flutter devices` para obtener el identificador del teléfono. Sustituye `ID_ANDROID` en ambos comandos. Si CMD no reconoce `adb`, usa la ruta completa de `platform-tools\adb.exe` dentro de tu SDK de Android. Si cambiaste el puerto del backend, usa ese puerto en ambos comandos.
 
    ```cmd
    adb -s ID_ANDROID reverse tcp:3000 tcp:3000

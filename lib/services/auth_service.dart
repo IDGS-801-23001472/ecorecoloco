@@ -12,10 +12,6 @@ class LoginException implements Exception {
 }
 
 class AuthService {
-  // NOTA PARA EMULADOR Y DISPOSITIVOS:
-  // - Si usas Emulador Android de Android Studio: 'http://10.0.2.2:3000/api'
-  // - Si usas Windows Desktop / Web / Chrome: 'http://localhost:3000/api'
-  // - Si usas un celular físico en tu red WiFi: 'http://TU_IP_LOCAL:3000/api'
   static const String baseUrl = String.fromEnvironment(
     'API_BASE_URL',
     defaultValue: 'https://ecorecoloco-api.onrender.com/api',

@@ -32,6 +32,7 @@ migrate_working_dir/
 .pub/
 /build/
 /coverage/
+/.flutter-plugins
 
 # Symbolication related
 app.*.symbols
@@ -43,6 +44,11 @@ app.*.map.json
 /android/app/debug
 /android/app/profile
 /android/app/release
+/android/app/build/
+/android/build/
+*.apk
+*.aab
+*.ipa
 
 # Widget Preview related
 .widget_preview/
@@ -62,4 +68,10 @@ key.properties
 *.pem
 *.key
 
-# Volcados locales y respaldos generados por backend/scripts/backup.ps1
+# Volcados locales y respaldos
+/backup/
+/backups/
+/dump/
+/backend/backup/
+/backend/backups/
+/backend/dump/
